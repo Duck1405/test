@@ -4,6 +4,7 @@ import argparse
 import base64
 import hashlib
 import json
+import os
 import socket
 import time
 
@@ -42,7 +43,7 @@ class Receiver:
         self.last_seen = time.monotonic()
         if kind == 'hello':
             return [reply('hello_ack', board='Arduino UNO Q', service_version='0.3.0',
-                          capabilities=['tasks_v1', 'screen_v1'], ai_ready=False)]
+                          capabilities=['tasks_v1', 'screen_v1'], ai_ready=False, process_id=os.getpid())]
         if kind == 'ping':
             if self.task and packet.get('task_id') != self.task['id']:
                 self.stop()

@@ -2,7 +2,38 @@
 
 `bob_service.py` runs on the **Debian/Linux side of UNO Q**, not as a microcontroller sketch. It uses Python 3's standard library and binds only to `127.0.0.1:8765` on the board. The Windows app reaches that socket over a physical USB ADB transport. Wi-Fi ADB devices are not offered by Bob.
 
-Nothing has been uploaded to a board yet. Once you connect the Q, we will verify its initial setup and USB access in Arduino App Lab, copy this folder to the board, and run `python3 bob_service.py` there. Keeping Arduino App Lab open (or running the official platform-tools ADB server) provides the laptop's local ADB server on port 5037. Bob talks to that server directly; it does not need to ship an `adb.exe` binary.
+Nothing has been uploaded to a board yet. Once you connect the Q, we will verify its initial setup and USB access in Arduino App Lab and install this folder's boot service. Keeping Arduino App Lab open (or running the official platform-tools ADB server) provides the laptop's local ADB server on port 5037. Bob talks to that server directly; it does not need to ship an `adb.exe` binary.
+
+## Start automatically at boot
+
+Copy this folder onto UNO Q. From Windows PowerShell in the platform-tools folder:
+
+```powershell
+.\adb.exe -d push "C:\Users\rayan\Documents\ChatGPT\ESP 32 based keyboard\uno-q" /tmp/bob-uno-q
+.\adb.exe -d shell
+```
+
+In the board's shell, stop any manually started receiver first, then run:
+
+```sh
+sudo python3 /tmp/bob-uno-q/install_service.py
+```
+
+The installer copies the receiver into persistent storage at `/opt/bob-the-butler/`, installs `bob-butler.service`, enables it at boot and starts it immediately. It verifies a live hello response. You can then close the terminal. Re-running the installer updates and restarts the same service.
+
+The receiver runs as a systemd-managed unprivileged user. It starts without a desktop login, laptop connection or Wi-Fi, listens only on the board's loopback interface, and restarts after a crash. Booting the Q does **not** start a task or screen sharing: Bob still needs a USB connection and a newly submitted task.
+
+Check or manage it from the board shell:
+
+```sh
+sudo systemctl status bob-butler --no-pager
+sudo journalctl -u bob-butler -f
+sudo systemctl restart bob-butler
+# To stop it and turn off automatic startup:
+sudo systemctl disable --now bob-butler
+```
+
+The installer has a `--dry-run` option that works on Windows too. The boot service has not yet been installed or reboot-tested on your physical Q.
 
 The existing COM-port connection remains for ESP32 testing. Its old handshake sketch does not implement tasks or screen frames, so Bob will connect but keep task submission disabled until a compatible service is present.
 
