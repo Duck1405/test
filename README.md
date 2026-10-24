@@ -1,39 +1,48 @@
 # Bob the Butler
 
-Windows-first USB companion for the planned local AI assistant.
+A compact Windows desktop widget built with **React, TypeScript and Tauri 2**. The native Rust backend owns USB serial connections; no browser serial permission or Python installation is needed.
 
-## Run
+## Download and run
 
-Open **DeviceCompanion.exe** in the project folder. The light 360 × 300 panel opens at the bottom-right of the primary screen, above the taskbar. It has rounded corners, a draggable Bob the Butler header, and a close button. Plug in the device: the app checks USB serial candidates automatically at 115200 baud. If it cannot find the device, select a COM port and press the green arrow. **Refresh ports** scans again and retries automatic detection.
+Download `DeviceCompanion.exe` from the repository using GitHub’s **Download raw file** button, then open it. The executable keeps its previous filename for compatibility; the app is named Bob the Butler. Windows requires the Microsoft Edge WebView2 runtime, normally present on Windows 10/11. A board-specific USB serial driver may also be required.
 
-A successful device handshake opens the connected screen. A wrong port, unavailable port, or missing firmware keeps you on the connection screen with a retry message. The app checks device responsiveness and returns to the connection screen if it loses contact. Close other serial monitors before connecting. Opening a USB serial adapter can reset some boards.
+Bob opens as a light, rounded 360 × 300 widget near the bottom-right of the primary monitor. Drag the header to move it, or use × to close it.
 
-This is a portable executable with Python bundled, not an installer. A board-specific serial driver may still be required.
+Plug in your device. Bob checks USB serial candidates automatically at **115200 baud**. If needed, select a COM port and press the green arrow. **Refresh ports** rescans and retries. A matching device response opens the connected screen; wrong devices and unavailable ports show a retry message. Heartbeats return the app to its connection screen when the device stops responding. Close other serial monitors before connecting. Some adapters may reset a board when their port opens.
 
-## Device firmware is required
+## Automated Windows build
 
-Opening a port alone does not prove it is our device. The board must implement the newline-delimited JSON protocol in `protocol.py`:
+`.github/workflows/windows.yml` runs on application changes pushed to `master`. It builds and checks the Rust protocol, builds the React frontend, creates the Windows executable and NSIS installer, and uploads both as the **Bob-the-Butler-Windows** workflow artifact. On a successful push build it also commits the newly built portable executable to the repository root as `DeviceCompanion.exe`. The binary-only commit does not retrigger the build. Repository branch rules must allow the workflow token to push that binary commit.
+
+## Build locally on Windows
+
+Install Node.js 22+, pnpm 11.25, stable Rust with the MSVC toolchain, Microsoft C++ Build Tools with Windows SDK, and Microsoft Edge WebView2. Then run:
+
+```powershell
+.\build.ps1
+```
+
+The script runs dependency installation, Rust protocol checks and the Tauri release build. It copies the portable executable into the project root. The installer is under `src-tauri/target/release/bundle/nsis/`.
+
+Development: `pnpm install --frozen-lockfile`, then `pnpm tauri dev`.
+Frontend-only preview: `pnpm dev` (device controls require the native app).
+Frontend type check and production build: `pnpm build`.
+Protocol checks: `cargo test --manifest-path src-tauri/Cargo.toml`.
+
+## Firmware protocol
+
+The board must implement newline-delimited JSON:
 
 - Host sends `{"type":"hello","protocol":1,"nonce":"<random>"}`.
 - Device returns `{"type":"hello_ack","device":"device-companion","protocol":1,"nonce":"<same random>"}`.
-- Host later sends `ping` with a new nonce; device responds with `pong` and the same identity, version, and nonce.
+- Host later sends `ping` with a new nonce; device responds with `pong` and the same identity, version and nonce.
 
-Hello has a five-second deadline; heartbeat replies have a three-second deadline. Messages are retried once a second. This is an application compatibility check, not cryptographic authentication.
+Hello has a five-second deadline; heartbeat replies have a three-second deadline. Messages are retried once a second. This checks application compatibility, not cryptographic authentication.
 
-For the existing ESP32, `firmware/companion_serial/companion_serial.ino` is a development responder. Install ArduinoJson 7 in Arduino IDE, select your ESP32 board, and upload the sketch. The sketch has not been compiled or flashed in this environment. UNO Q Linux-side USB transport and its responder still need implementation and hardware validation; an unconfigured board will not pass the check.
+For the existing ESP32, `firmware/companion_serial/companion_serial.ino` is a development responder. Install ArduinoJson 7, select your ESP32 board and upload it through Arduino IDE. It has not been compiled or flashed here. UNO Q Linux USB transport and a matching responder still need implementation and hardware validation.
 
-## Development
+## Scope
 
-Install Python 3 with tkinter, then run:
+This milestone implements the React widget, serial connection, device verification, and disconnect handling. AI, task execution, screenshot transfer and physical-input cancellation are not implemented yet. macOS and Linux need separate builds and testing.
 
-```powershell
-powershell -ExecutionPolicy Bypass -File .\build.ps1
-```
-
-The build writes `dist/DeviceCompanion.exe` and copies it to the project root for GitHub Desktop. Close the executable before rebuilding. The root executable is tracked by Git; build outputs and the virtual environment are ignored.
-
-Run source with `.venv\Scripts\python.exe app.py`.
-
-Run checks with `.venv\Scripts\python.exe -m unittest discover -s tests -v`.
-
-This milestone implements device connection and verification screens. AI, task execution, screenshot transfer, and physical-input cancellation are not implemented yet.
+The previous Python/Tkinter prototype (`app.py`, `protocol.py`, `requirements.txt`, `tests/`) is retained as a reference. It is not bundled into the Tauri executable.
