@@ -8,4 +8,5 @@ if (-not (Test-Path '.venv\Scripts\python.exe')) {
 if ($LASTEXITCODE -ne 0) { throw 'Dependency installation failed.' }
 & .venv\Scripts\python.exe -m PyInstaller --noconfirm --clean --onefile --windowed --name DeviceCompanion app.py
 if ($LASTEXITCODE -ne 0) { throw 'Build failed.' }
-Write-Host 'Ready: dist\DeviceCompanion.exe'
+Copy-Item -LiteralPath '.\dist\DeviceCompanion.exe' -Destination '.\DeviceCompanion.exe' -Force
+Write-Host 'Ready: DeviceCompanion.exe (also in dist)'

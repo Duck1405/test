@@ -1,21 +1,39 @@
-# Device Companion
+# Bob the Butler
 
-Windows-first USB serial companion for the planned UNO Q desktop assistant.
+Windows-first USB companion for the planned local AI assistant.
 
-## Run on Windows
+## Run
 
-Open `dist/DeviceCompanion.exe`, plug in your board, click **Refresh**, select its COM port and baud rate, then click **Connect**. The default is 115200 baud; match your firmware. Close Arduino Serial Monitor or other software using the port first. Click **Disconnect** to release the port.
+Open **DeviceCompanion.exe** in the project folder. The light 360 × 300 panel opens at the bottom-right of the primary screen, above the taskbar. It has rounded corners, a draggable Bob the Butler header, and a close button. Plug in the device: the app checks USB serial candidates automatically at 115200 baud. If it cannot find the device, select a COM port and press the green arrow. **Refresh ports** scans again and retries automatic detection.
 
-This is a portable executable, not an installer. Python is bundled. A board-specific USB serial driver may still be required. No COM port appears unless the board exposes a serial interface; UNO Q Linux-side USB transport still needs to be configured and validated.
+A successful device handshake opens the connected screen. A wrong port, unavailable port, or missing firmware keeps you on the connection screen with a retry message. The app checks device responsiveness and returns to the connection screen if it loses contact. Close other serial monitors before connecting. Opening a USB serial adapter can reset some boards.
 
-The app opens a serial connection and displays received text. It does not yet verify device identity, send tasks, run AI, capture the screen, or control input. Some USB serial adapters may reset their board when opening a port, even with DTR/RTS disabled.
+This is a portable executable with Python bundled, not an installer. A board-specific serial driver may still be required.
 
-## Development and build
+## Device firmware is required
 
-Install Python 3 with tkinter, then run `powershell -ExecutionPolicy Bypass -File .\build.ps1`. Output: `dist/DeviceCompanion.exe`.
+Opening a port alone does not prove it is our device. The board must implement the newline-delimited JSON protocol in `protocol.py`:
 
-Run source with `.venv\Scripts\python.exe app.py`. Build outputs and the virtual environment are excluded from Git; publish executables as GitHub release assets.
+- Host sends `{"type":"hello","protocol":1,"nonce":"<random>"}`.
+- Device returns `{"type":"hello_ack","device":"device-companion","protocol":1,"nonce":"<same random>"}`.
+- Host later sends `ping` with a new nonce; device responds with `pong` and the same identity, version, and nonce.
 
-## Next milestone
+Hello has a five-second deadline; heartbeat replies have a three-second deadline. Messages are retried once a second. This is an application compatibility check, not cryptographic authentication.
 
-Define a versioned device handshake and implement a matching board service. Then add task messages, screenshot transport, cancellation and AI inference.
+For the existing ESP32, `firmware/companion_serial/companion_serial.ino` is a development responder. Install ArduinoJson 7 in Arduino IDE, select your ESP32 board, and upload the sketch. The sketch has not been compiled or flashed in this environment. UNO Q Linux-side USB transport and its responder still need implementation and hardware validation; an unconfigured board will not pass the check.
+
+## Development
+
+Install Python 3 with tkinter, then run:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\build.ps1
+```
+
+The build writes `dist/DeviceCompanion.exe` and copies it to the project root for GitHub Desktop. Close the executable before rebuilding. The root executable is tracked by Git; build outputs and the virtual environment are ignored.
+
+Run source with `.venv\Scripts\python.exe app.py`.
+
+Run checks with `.venv\Scripts\python.exe -m unittest discover -s tests -v`.
+
+This milestone implements device connection and verification screens. AI, task execution, screenshot transfer, and physical-input cancellation are not implemented yet.
