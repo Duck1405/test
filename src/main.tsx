@@ -7,7 +7,7 @@ import './style.css';
 type Port = { name: string; label: string; usb: boolean };
 type DeviceState = {
   phase: 'disconnected' | 'connecting' | 'connected' | 'disconnecting'; port: string; error: string;
-  capabilities: string[]; task_phase: 'idle' | 'sending' | 'active' | 'stopped';
+  capabilities: string[]; task_phase: 'idle' | 'sending' | 'active' | 'stopping' | 'stopped';
   task_id: string; mode: string; message: string; frames: number;
 };
 type LogEntry = { time: number; source: 'laptop' | 'uno'; message: string };
@@ -59,7 +59,7 @@ function App() {
   const native = isTauri();
   const connected = device.phase === 'connected';
   const busy = device.phase === 'connecting' || device.phase === 'disconnecting';
-  const sessionBusy = device.task_phase === 'sending' || device.task_phase === 'active';
+  const sessionBusy = ['sending', 'active', 'stopping'].includes(device.task_phase);
   const supported = device.capabilities.includes('tasks_v1') && device.capabilities.includes('screen_v1');
 
   async function sync() {
@@ -121,7 +121,7 @@ function App() {
     return () => { active = false; clearTimeout(timer); };
   }, [native, refreshKey]);
   useEffect(() => {
-    const key = `${device.task_id}:${device.task_phase}:${device.message}`;
+    const key = `${device.task_id}:${device.message}`;
     if (device.message && device.task_phase !== 'sending' && key !== lastMessage.current) {
       lastMessage.current = key;
       setChat(previous => [...previous, { role: 'bob' as const, text: device.message }].slice(-30));
@@ -157,7 +157,7 @@ function App() {
   }
   const error = uiError || device.error;
   const status = busy ? (device.phase === 'connecting' ? `Checking ${device.port.startsWith('adb:') ? 'UNO Q USB' : device.port}…` : 'Disconnecting…')
-    : connected ? (device.task_phase === 'active' ? `Sharing primary screen · ${device.frames} frames received` : device.task_phase === 'sending' ? 'Waiting for UNO Q receipt…' : 'UNO Q connected · screen sharing off')
+    : connected ? (device.task_phase === 'active' ? `Sharing primary screen · ${device.frames} frames received` : device.task_phase === 'sending' ? 'Waiting for UNO Q receipt…' : device.task_phase === 'stopping' ? 'Sharing off · finishing stop…' : 'UNO Q connected · screen sharing off')
       : error ? 'Let’s try again.' : ports.length ? 'Choose a device, or let Bob find it.' : 'Waiting for your USB device…';
 
   return <main className={`widget ${connected ? 'has-chat' : ''}`}>

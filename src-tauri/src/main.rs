@@ -86,12 +86,12 @@ impl Session {
         }
     }
     fn stop(&self, reason: &str) {
-        self.task_cancel.store(true, Ordering::SeqCst);
-        self.indicators_ready.store(false, Ordering::SeqCst);
         let changed = {
             let mut s = self.snapshot.lock().unwrap();
             if s.task_phase == "active" || s.task_phase == "sending" {
-                s.task_phase = "stopped".into();
+                self.task_cancel.store(true, Ordering::SeqCst);
+                self.indicators_ready.store(false, Ordering::SeqCst);
+                s.task_phase = "stopping".into();
                 s.message = reason.into();
                 true
             } else {
@@ -298,7 +298,8 @@ fn run_device(
     let mut heartbeat = Instant::now();
     let mut frame_time = Instant::now() - Duration::from_secs(4);
     while !session.cancel.load(Ordering::SeqCst) {
-        if session.task_cancel.load(Ordering::SeqCst) {
+        let stopping = session.snapshot.lock().unwrap().task_phase == "stopping";
+        if stopping {
             if let Some(id) = active_id.take() {
                 // Stop locally first; notify the board if the cable is still available.
                 let _ = exchange(
@@ -311,6 +312,10 @@ fn run_device(
                 );
                 heartbeat = Instant::now();
             }
+            // A new task cannot reset cancellation until the old worker has
+            // finished its transfer/stop and discarded any unsent old request.
+            while receiver.try_recv().is_ok() {}
+            session.snapshot.lock().unwrap().task_phase = "stopped".into();
         }
         if let Ok(Command::Task { id, mode, text }) = receiver.try_recv() {
             if cancelled(session, true) {
@@ -433,6 +438,9 @@ async fn connect_device(
         *owned.sender.lock().unwrap() = None;
         let mut state = owned.snapshot.lock().unwrap();
         state.phase = "disconnected".into();
+        if state.task_phase == "stopping" {
+            state.task_phase = "stopped".into();
+        }
         state.error = error;
     });
     Ok(())
@@ -477,7 +485,7 @@ fn start_task(
         {
             return Err("Upload the Bob receiver service to the UNO Q first. This device only supports connection checks.".into());
         }
-        if state.task_phase == "active" || state.task_phase == "sending" {
+        if matches!(state.task_phase.as_str(), "active" | "sending" | "stopping") {
             return Err("Stop the current session before sending another task.".into());
         }
         session.task_cancel.store(false, Ordering::SeqCst);
