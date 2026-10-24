@@ -2,7 +2,7 @@
 
 `bob_service.py` runs on the **Debian/Linux side of UNO Q**, not as a microcontroller sketch. It uses Python 3's standard library and binds only to `127.0.0.1:8765` on the board. The Windows app reaches that socket over a physical USB ADB transport. Wi-Fi ADB devices are not offered by Bob.
 
-Nothing has been uploaded to a board yet. Once you connect the Q, we will verify its initial setup and USB access in Arduino App Lab and install this folder's boot service. Keeping Arduino App Lab open (or running the official platform-tools ADB server) provides the laptop's local ADB server on port 5037. Bob talks to that server directly; it does not need to ship an `adb.exe` binary.
+The receiver and boot service have been installed and verified on a physical UNO Q running Debian 13.2. For another board, complete initial setup in Arduino App Lab and install this folder's boot service. Keeping Arduino App Lab open (or running the official platform-tools ADB server) provides the laptop's local ADB server on port 5037. Bob talks to that server directly; it does not need to ship an `adb.exe` binary.
 
 ## Start automatically at boot
 
@@ -33,7 +33,7 @@ sudo systemctl restart bob-butler
 sudo systemctl disable --now bob-butler
 ```
 
-The installer has a `--dry-run` option that works on Windows too. The boot service has not yet been installed or reboot-tested on your physical Q.
+The installer has a `--dry-run` option that works on Windows too. The boot service was verified active and enabled after reboot on a physical UNO Q. Task receipts in both modes, a synthetic JPEG transfer and Stop were also tested over USB. AI and real desktop-sharing integration remain separate milestones.
 
 The existing COM-port connection remains for ESP32 testing. Its old handshake sketch does not implement tasks or screen frames, so Bob will connect but keep task submission disabled until a compatible service is present.
 

@@ -74,16 +74,20 @@ pub fn ports() -> Result<Vec<Port>, String> {
         })
         .collect();
     if let Ok(devices) = adb_query("host:devices-l") {
+        // Some Windows ADB drivers report no usb: path and get-devpath=unknown.
+        // The host-usb selector still verifies a single physical USB transport.
+        let single_usb = adb_query("host-usb:get-serialno").ok();
         for line in devices.lines() {
             let parts: Vec<&str> = line.split_whitespace().collect();
             if parts.len() < 2 || parts[1] != "device" {
                 continue;
             }
             let serial = parts[0];
-            // get-devpath must confirm a physical USB transport; never accept Wi-Fi ADB.
+            // Require USB metadata or the physical USB selector; never accept Wi-Fi ADB.
             let usb = parts.iter().any(|p| p.starts_with("usb:"))
                 || adb_query(&format!("host-serial:{serial}:get-devpath"))
-                    .is_ok_and(|s| s.starts_with("usb:"));
+                    .is_ok_and(|s| s.starts_with("usb:"))
+                || single_usb.as_deref().is_some_and(|s| s.trim() == serial);
             if usb {
                 ports.push(Port {
                     name: format!("adb:{serial}"),

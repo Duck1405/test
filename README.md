@@ -8,7 +8,7 @@ Download `DeviceCompanion.exe` from the repository using GitHub's **Download raw
 
 The light, rounded 360 × 300 widget opens near the bottom-right corner. Drag its header to move it. The device picker includes physically connected USB ADB boards and COM ports. For UNO Q, complete initial setup in Arduino App Lab and keep its ADB server running. Use **Debug → Check USB** for diagnostics.
 
-The UNO Q receiver is in [`uno-q/`](uno-q/README.md). **It has not been uploaded or tested on your Q yet.** We will do that after you connect it. A COM-only ESP32 with the old handshake sketch can connect but cannot start a task.
+The UNO Q receiver is in [`uno-q/`](uno-q/README.md). It has been installed on the Q and verified to start automatically after reboot. Both task modes, synthetic image transfer and Stop passed USB protocol checks; the AI model is not installed. A COM-only ESP32 with the old handshake sketch can connect but cannot start a task.
 
 ## Task and screen-sharing flow
 
