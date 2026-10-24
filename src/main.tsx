@@ -11,6 +11,7 @@ type DeviceState = {
   task_id: string; mode: string; message: string; frames: number;
 };
 type LogEntry = { time: number; source: 'laptop' | 'uno'; message: string };
+type PointerTarget = { x: number; y: number; kind: 'move' | 'click'; label: string; mode: string };
 type Chat = { role: 'user' | 'bob'; text: string };
 const initial: DeviceState = { phase: 'disconnected', port: '', error: '', capabilities: [], task_phase: 'idle', task_id: '', mode: 'guide', message: '', frames: 0 };
 
@@ -28,13 +29,37 @@ function DeviceIcon({ connected }: { connected: boolean }) {
 }
 
 function SharingOverlay() {
+  const [target, setTarget] = useState<PointerTarget | null>(null);
+  useEffect(() => {
+    if (!isTauri()) return;
+    let active = true;
+    let timer: ReturnType<typeof setTimeout>;
+    async function poll() {
+      try { const next = await invoke<PointerTarget | null>('get_pointer'); if (active) setTarget(next); }
+      catch { if (active) setTarget(null); }
+      if (active) timer = setTimeout(poll, 50);
+    }
+    void poll(); return () => { active = false; clearTimeout(timer); };
+  }, []);
   return <div className="screen-border" aria-label="Primary screen is being shared with UNO Q">
     <span className="corner tl" /><span className="corner tr" /><span className="corner bl" /><span className="corner br" />
+    {target && <div className={`blue-pointer ${target.kind} ${target.x > .7 ? 'edge-right' : ''} ${target.y > .8 ? 'edge-bottom' : ''}`} style={{ left: `${target.x * 100}%`, top: `${target.y * 100}%` }}>
+      {target.kind === 'click' && <><span className="click-ring" /><span className="click-wave" /></>}
+      <svg viewBox="0 0 30 38" aria-hidden="true"><path d="M2 2 25 22 15 23 11 34 6 32 10 22 2 24Z" fill="#2185ef" stroke="white" strokeWidth="2.5" strokeLinejoin="round" /></svg>
+      <span className="pointer-label">{target.mode === 'guide' ? target.label : target.kind === 'click' ? 'Bob is clicking here' : 'Bob is moving here'}</span>
+    </div>}
   </div>;
 }
 function StopPopup() {
   const [error, setError] = useState('');
-  return <div className="stop-popup"><span className="live-dot" /><span>{error || 'Screen shared with UNO Q'}</span>
+  const [mode, setMode] = useState('guide');
+  useEffect(() => {
+    if (!isTauri()) return;
+    let active = true;
+    const timer = setInterval(() => void invoke<DeviceState>('get_state').then(state => { if (active) setMode(state.mode); }).catch(() => {}), 300);
+    return () => { active = false; clearInterval(timer); };
+  }, []);
+  return <div className="stop-popup"><span className="live-dot" /><span>{error || (mode === 'do' ? 'Auto · screen control' : 'Guide · screen shared')}</span>
     <button onClick={() => void invoke('stop_task').catch(e => setError(String(e)))}>Stop <kbd>Esc</kbd></button></div>;
 }
 
@@ -49,6 +74,10 @@ function App() {
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [task, setTask] = useState('');
   const [mode, setMode] = useState('guide');
+  const [targetX, setTargetX] = useState(50);
+  const [targetY, setTargetY] = useState(50);
+  const [testKind, setTestKind] = useState('move');
+  const demoTarget = useRef<{ id: string; x: number; y: number; kind: string } | null>(null);
   const [chat, setChat] = useState<Chat[]>([]);
   const attempted = useRef(new Set<string>());
   const connecting = useRef(false);
@@ -60,7 +89,7 @@ function App() {
   const connected = device.phase === 'connected';
   const busy = device.phase === 'connecting' || device.phase === 'disconnecting';
   const sessionBusy = ['sending', 'active', 'stopping'].includes(device.task_phase);
-  const supported = device.capabilities.includes('tasks_v1') && device.capabilities.includes('screen_v1');
+  const supported = device.capabilities.includes('tasks_v1') && device.capabilities.includes('screen_v1') && device.capabilities.includes('actions_v1');
 
   async function sync() {
     const next = await invoke<DeviceState>('get_state');
@@ -135,6 +164,24 @@ function App() {
     return () => window.removeEventListener('keydown', escape);
   }, [native]);
 
+  useEffect(() => {
+    const pending = demoTarget.current;
+    if (!pending || pending.id !== device.task_id) return;
+    if (device.task_phase === 'stopping' || device.task_phase === 'stopped' || device.phase === 'disconnected') { demoTarget.current = null; return; }
+    if (device.task_phase === 'active' && device.frames > 0) {
+      demoTarget.current = null;
+      void invoke('test_pointer', { x: pending.x, y: pending.y, kind: pending.kind }).catch(e => setUiError(String(e)));
+    }
+  }, [device.task_id, device.task_phase, device.frames, device.phase]);
+  async function startPointerTest() {
+    if (sessionBusy) return;
+    setUiError('');
+    try {
+      const id = await invoke<string>('start_task', { text: `Manual ${testKind} pointer test. No AI model.`, mode });
+      demoTarget.current = { id, x: targetX / 100, y: targetY / 100, kind: testKind };
+      await sync();
+    } catch (error) { demoTarget.current = null; setUiError(String(error)); }
+  }
   async function disconnect() {
     manual.current = true;
     try { await invoke('disconnect_device'); await sync(); }
@@ -175,6 +222,16 @@ function App() {
     {debug ? <section className="debug-view">
       <div className="debug-heading"><button onClick={() => setDebug(false)}>← Back</button><strong>Debug logs</strong>
         <button disabled={!native} onClick={() => void invoke('diagnose_usb').catch(e => setUiError(String(e)))}>Check USB</button></div>
+      <div className="pointer-test">
+        <div className="test-fields"><select aria-label="Pointer test mode" value={mode} disabled={sessionBusy} onChange={e => setMode(e.target.value)}><option value="guide">Guide</option><option value="do">Auto</option></select>
+          <label>X% <input aria-label="Target X percent" type="number" min="0" max="100" value={targetX} disabled={sessionBusy} onChange={e => setTargetX(Number(e.target.value))} /></label>
+          <label>Y% <input aria-label="Target Y percent" type="number" min="0" max="100" value={targetY} disabled={sessionBusy} onChange={e => setTargetY(Number(e.target.value))} /></label>
+          <select aria-label="Pointer test action" value={testKind} disabled={sessionBusy} onChange={e => setTestKind(e.target.value)}><option value="move">Move</option><option value="click">Click</option></select></div>
+        <button className="test-start" disabled={!native || !connected || !supported || sessionBusy || targetX < 0 || targetX > 100 || targetY < 0 || targetY > 100} onClick={() => void startPointerTest()}>Start {mode === 'guide' ? 'guide' : 'auto'} {testKind} test</button>
+        <p>{mode === 'guide' ? 'Blue target guides you; you move and click.' : 'Moves/clicks the real cursor. Keep still; any input stops Auto.'}</p>
+        {sessionBusy && <button className="test-stop" onClick={() => void stopTask()}>Stop session</button>}
+        {device.task_phase === 'active' && device.mode === 'guide' && <button className="test-start" onClick={() => void invoke('complete_guidance').catch(e => setUiError(String(e)))}>Step done</button>}
+      </div>
       <div className="log-tabs">{[['all', 'All'], ['laptop', 'Laptop'], ['uno', 'UNO Q']].map(([value, label]) => <button key={value} className={source === value ? 'selected' : ''} onClick={() => setSource(value)}>{label}</button>)}</div>
       <div className="logs" role="log" aria-label="Device and laptop debug logs">
         {logs.filter(log => source === 'all' || log.source === source).map((log, i) => <div className={`log-line ${log.source}`} key={`${log.time}:${i}`}><time>{new Date(log.time).toLocaleTimeString()}</time><b>{log.source === 'uno' ? 'Q' : 'PC'}</b><span>{log.message}</span></div>)}
@@ -186,7 +243,7 @@ function App() {
         {sessionBusy ? <button onClick={() => void stopTask()}>Stop</button> : <button onClick={() => void disconnect()}>Disconnect</button>}
       </div>
       <div className="chat-messages" role="log" aria-label="Conversation with Bob">
-        {!chat.length && <div className="bubble bob">{supported ? 'Ready when you are. Send a task to start sharing your primary screen with UNO Q. AI is coming next.' : 'Connected. Upload the Bob receiver service to UNO Q to enable tasks and screen sharing.'}</div>}
+        {!chat.length && <div className="bubble bob">{supported ? 'Ready when you are. Send a task to start sharing your primary screen with UNO Q. AI is coming next.' : 'Connected. Upload the Bob receiver service to UNO Q to enable tasks, screen sharing and pointers.'}</div>}
         {chat.map((message, i) => <div className={`bubble ${message.role}`} key={i}>{message.text}</div>)}
         <div ref={chatBottom} />
       </div>
@@ -195,7 +252,7 @@ function App() {
         <div className="composer-controls"><select aria-label="Assistant mode" value={mode} disabled={sessionBusy} onChange={e => setMode(e.target.value)}><option value="do">Do it for me</option><option value="guide">Guide me</option></select>
           <button className="send" type="submit" disabled={!task.trim() || sessionBusy || !supported} title="Send task and share primary screen" aria-label="Send task and share primary screen">↑</button></div>
       </form>
-      <p className="consent-note">Send shares your primary screen with UNO Q. <kbd>Esc</kbd> stops.</p>
+      <p className="consent-note">{mode === 'do' ? 'Auto can move/click. Any physical input stops it.' : 'Guide shows blue targets. You move and click.'} <kbd>Esc</kbd> stops.</p>
     </> : <>
       <section className="hero"><DeviceIcon connected={false} /><div><h1>Hey, let’s connect.</h1><p>Plug in your UNO Q to get started.</p></div></section>
       <div className="status" role="status" aria-live="polite"><span className={busy ? 'pulse' : ''} />{status}</div>

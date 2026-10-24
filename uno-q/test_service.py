@@ -12,8 +12,8 @@ class ReceiverTests(unittest.TestCase):
     def setUp(self):
         self.receiver = Receiver()
 
-    def send(self, kind, **kwargs):
-        return self.receiver.handle(dict(type=kind, protocol=1, nonce='test', **kwargs))
+    def send(self, type_, **kwargs):
+        return self.receiver.handle(dict(type=type_, protocol=1, nonce='test', **kwargs))
 
     def task(self):
         return self.send('task', task_id='task-1', mode='guide', text='Open a document')
@@ -65,6 +65,41 @@ class ReceiverTests(unittest.TestCase):
         self.assertIsNotNone(self.receiver.task)
         self.send('ping')
         self.assertIsNone(self.receiver.task)
+
+    def framed_task(self, mode='guide'):
+        self.send('task', task_id='task-1', mode=mode, text='Pointer test only')
+        data = b'test-image'
+        self.send('screen_begin', task_id='task-1', frame_id='frame-1', size=len(data))
+        self.send('screen_chunk', task_id='task-1', frame_id='frame-1', index=0, data=base64.b64encode(data).decode())
+        self.send('screen_end', task_id='task-1', frame_id='frame-1', sha256=hashlib.sha256(data).hexdigest())
+
+    def test_guide_targets_are_idempotent_and_cannot_get_auto_permit(self):
+        self.framed_task()
+        self.send('test_action', task_id='task-1', kind='click', x=0.5, y=0.5)
+        first = self.send('next_action', task_id='task-1', frame_id='frame-1')[-1]['action']
+        retry = self.send('next_action', task_id='task-1', frame_id='frame-1')[-1]['action']
+        self.assertEqual(first['action_id'], retry['action_id'])
+        self.assertEqual(self.send('action_permit', task_id='task-1', frame_id='frame-1', action_id=first['action_id'])[-1]['type'], 'error')
+        self.assertEqual(self.send('action_result', task_id='task-1', action_id=first['action_id'], status='executed')[-1]['type'], 'error')
+        self.assertEqual(self.send('action_result', task_id='task-1', action_id=first['action_id'], status='guided')[-1]['type'], 'action_recorded')
+        self.assertEqual(self.send('action_result', task_id='task-1', action_id=first['action_id'], status='guided')[-1]['type'], 'action_recorded')
+        self.assertIsNone(self.send('next_action', task_id='task-1', frame_id='frame-1')[-1]['action'])
+
+    def test_auto_requires_current_task_frame_and_action_then_stop_revokes_it(self):
+        self.framed_task('do')
+        action = self.receiver.queue_action('move', 0.2, 0.3, 'Move here')
+        self.send('next_action', task_id='task-1', frame_id='frame-1')
+        self.assertEqual(self.send('action_permit', task_id='task-1', frame_id='old', action_id=action['action_id'])[-1]['type'], 'error')
+        self.assertEqual(self.send('action_permit', task_id='task-1', frame_id='frame-1', action_id=action['action_id'])[-1]['type'], 'action_permitted')
+        self.send('stop_task', task_id='task-1')
+        self.assertIsNone(self.receiver.inflight_action)
+        self.assertEqual(self.send('action_permit', task_id='task-1', frame_id='frame-1', action_id=action['action_id'])[-1]['type'], 'error')
+
+    def test_invalid_pointer_targets_are_rejected(self):
+        self.framed_task()
+        for kind, x, y in [('shell', 0.5, 0.5), ('click', -1, 0.5), ('move', float('nan'), 0.5), ('click', 1.1, 0.5)]:
+            with self.assertRaises(ValueError):
+                self.receiver.queue_action(kind, x, y)
 
     def test_socket_session_handles_fragmented_json(self):
         host, board = socket.socketpair()

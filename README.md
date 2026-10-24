@@ -20,7 +20,13 @@ The UNO Q receiver is in [`uno-q/`](uno-q/README.md). It has been installed on t
 6. Bob sends downscaled JPEG frames from the **primary monitor only**, up to 640 pixels wide and 32 KiB each. New frames are scheduled three seconds after the previous transfer; serial links may be slower. Each frame is acknowledged by the board.
 7. Press **Escape anywhere**, click Stop in the popup/widget, disconnect, or close Bob to stop capture. Escape is checked by a native Windows monitor, independent of widget focus or board replies. In-flight bytes may finish reaching the board; a stop request and session lease prevent continuing the old session. Reconnecting does not resume sharing.
 
-The two modes are delivered to UNO Q, but **AI, automated actions, guidance generation and target pointers are not implemented yet**. This layer sends tasks/screens and receives confirmations. It does not type, click, execute shell commands or control applications.
+**Guide me:** a large blue overlay pointer marks the target. A pulsing blue circle means “click here.” You move/click the real cursor yourself; Bob observes your click near the target and acknowledges the step. The Debug view also has a manual **Step done** fallback. Guide mode does not inject input.
+
+**Do it for me:** the same blue target appears briefly before Bob moves the real Windows cursor and, for a click action, sends one left click. Any physical keyboard or mouse input stops Auto. Escape, Stop, disconnect and closing Bob stop both modes. Auto is disabled if physical-input monitoring cannot start.
+
+**The AI model is not installed.** No target is generated from a normal task yet. For now, **Debug → pointer test** starts an explicit one-step test through UNO Q. Choose Guide/Auto, a target X/Y percentage of the primary screen, and Move/Click, then click the clearly labeled test button. Auto tests move/click the real mouse: select a harmless target before starting and leave the mouse still. Stop the session after testing. Default test action is Move.
+
+The future model will call `Receiver.queue_action()` on UNO Q. Requests are tied to the current task and acknowledged screenshot, have unique IDs, and are processed once. Auto requires a fresh board permit and rejects targets based on screens older than ten seconds. Guide targets expire after thirty seconds. Only normalized primary-screen move and left-click actions are supported; no shell, typing, dragging or other buttons are exposed.
 
 Debug is beside “Your device. Your control.” It opens bounded Laptop / UNO Q metadata logs inside the widget. No screenshot or prompt payloads are logged. The Q retains the latest frame in RAM only, and releases it when the session ends.
 

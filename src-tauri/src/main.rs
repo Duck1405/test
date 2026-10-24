@@ -1,4 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+mod actions;
+mod input;
 mod screen;
 mod transport;
 
@@ -7,7 +9,7 @@ use serde::Serialize;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::{
-    collections::VecDeque,
+    collections::{HashSet, VecDeque},
     sync::{
         atomic::{AtomicBool, Ordering},
         mpsc, Arc, Mutex,
@@ -35,6 +37,11 @@ struct LogEntry {
     message: String,
 }
 enum Command {
+    Test {
+        x: f64,
+        y: f64,
+        kind: String,
+    },
     Task {
         id: String,
         mode: String,
@@ -49,6 +56,9 @@ struct Session {
     task_cancel: Arc<AtomicBool>,
     indicators_ready: Arc<AtomicBool>,
     sender: Arc<Mutex<Option<mpsc::Sender<Command>>>>,
+    pointer: Arc<Mutex<Option<actions::Pointer>>>,
+    last_frame: Arc<Mutex<Option<(String, Instant)>>>,
+    guide_confirmed: Arc<AtomicBool>,
 }
 impl Session {
     fn new() -> Self {
@@ -69,6 +79,9 @@ impl Session {
             task_cancel: Arc::new(AtomicBool::new(true)),
             indicators_ready: Arc::new(AtomicBool::new(false)),
             sender: Arc::new(Mutex::new(None)),
+            pointer: Arc::new(Mutex::new(None)),
+            last_frame: Arc::new(Mutex::new(None)),
+            guide_confirmed: Arc::new(AtomicBool::new(false)),
         }
     }
     fn log(&self, source: &str, message: impl AsRef<str>) {
@@ -91,6 +104,8 @@ impl Session {
             if s.task_phase == "active" || s.task_phase == "sending" {
                 self.task_cancel.store(true, Ordering::SeqCst);
                 self.indicators_ready.store(false, Ordering::SeqCst);
+                *self.pointer.lock().unwrap() = None;
+                input::set_auto(false);
                 s.task_phase = "stopping".into();
                 s.message = reason.into();
                 true
@@ -230,6 +245,7 @@ fn send_frame(
     jpeg: &[u8],
 ) -> Result<(), String> {
     let frame = uuid::Uuid::new_v4().to_string();
+    let captured_at = Instant::now();
     if exchange(
         port,
         session,
@@ -252,8 +268,214 @@ fn send_frame(
     }
     if exchange(port,session,json!({"type":"screen_end","task_id":id,"frame_id":frame,"sha256":format!("{:x}",Sha256::digest(jpeg))}),"screen_received",3,true)?.is_some() && !cancelled(session,true) {
         session.snapshot.lock().unwrap().frames+=1;
+        *session.last_frame.lock().unwrap()=Some((frame.clone(),captured_at));
         session.log("laptop",format!("Screen frame acknowledged: {} JPEG bytes.",jpeg.len()));
     }
+    Ok(())
+}
+
+struct PendingAction {
+    action: actions::Action,
+    started: Instant,
+    click_seq: u64,
+}
+
+fn process_actions(
+    port: &mut dyn transport::Transport,
+    session: &Session,
+    pending: &mut Option<PendingAction>,
+    seen: &mut HashSet<String>,
+    last_poll: &mut Instant,
+) -> Result<(), String> {
+    if let Some(step) = pending.as_ref() {
+        if !session.active() {
+            *pending = None;
+            *session.pointer.lock().unwrap() = None;
+            return Ok(());
+        }
+        let mode = session.snapshot.lock().unwrap().mode.clone();
+        if mode == "guide" {
+            if step.started.elapsed() > Duration::from_secs(30) {
+                return Err("Guide target expired. Start a new session to refresh it.".into());
+            }
+            let done = session.guide_confirmed.swap(false, Ordering::SeqCst)
+                || input::guided_done(
+                    step.action.x,
+                    step.action.y,
+                    step.action.kind == "click",
+                    step.click_seq,
+                );
+            if !done {
+                return Ok(());
+            }
+        } else {
+            // Let the visible blue target settle before moving/clicking. This
+            // wait is nonblocking so Stop, physical input and heartbeats work.
+            if step.started.elapsed() < Duration::from_millis(450) {
+                return Ok(());
+            }
+            let frame = session.last_frame.lock().unwrap().clone();
+            if !frame.as_ref().is_some_and(|(id, time)| {
+                id == &step.action.frame_id && time.elapsed() < Duration::from_secs(10)
+            }) {
+                return Err("Auto target is based on an old screen. Session stopped.".into());
+            }
+            if exchange(port,session,json!({"type":"action_permit","task_id":step.action.task_id,"frame_id":step.action.frame_id,"action_id":step.action.action_id}),"action_permitted",2,true)?.is_none(){return Ok(());}
+            input::execute(
+                step.action.x,
+                step.action.y,
+                step.action.kind == "click",
+                || {
+                    session.active()
+                        && !cancelled(session, true)
+                        && session.indicators_ready.load(Ordering::SeqCst)
+                        && frame
+                            .as_ref()
+                            .is_some_and(|(_, time)| time.elapsed() < Duration::from_secs(10))
+                },
+            )?;
+        }
+        let status = if mode == "guide" {
+            "guided"
+        } else {
+            "executed"
+        };
+        exchange(
+            port,
+            session,
+            json!({"type":"action_result","task_id":step.action.task_id,"action_id":step.action.action_id,"status":status}),
+            "action_recorded",
+            3,
+            true,
+        )?;
+        session.log(
+            "laptop",
+            format!("{} pointer step {}.", step.action.kind, status),
+        );
+        *session.pointer.lock().unwrap() = None;
+        *pending = None;
+        return Ok(());
+    }
+    if last_poll.elapsed() < Duration::from_millis(250) {
+        return Ok(());
+    }
+    *last_poll = Instant::now();
+    let Some((frame, at)) = session.last_frame.lock().unwrap().clone() else {
+        return Ok(());
+    };
+    if at.elapsed() >= Duration::from_secs(10) {
+        return Ok(());
+    }
+    let task = session.snapshot.lock().unwrap().task_id.clone();
+    let Some(reply) = exchange(
+        port,
+        session,
+        json!({"type":"next_action","task_id":task,"frame_id":frame}),
+        "action",
+        2,
+        true,
+    )?
+    else {
+        return Ok(());
+    };
+    if reply["action"].is_null() {
+        return Ok(());
+    }
+    let action: actions::Action = serde_json::from_value(reply["action"].clone())
+        .map_err(|_| "Device sent an invalid pointer action.")?;
+    action.validate(&task, &frame)?;
+    if seen.len() >= 512 || !seen.insert(action.action_id.clone()) {
+        return Err("Duplicate or excessive action request. Session stopped.".into());
+    }
+    if !session.active() {
+        return Ok(());
+    }
+    let mode = session.snapshot.lock().unwrap().mode.clone();
+    *session.pointer.lock().unwrap() = Some(actions::Pointer {
+        x: action.x,
+        y: action.y,
+        kind: action.kind.clone(),
+        label: if action.label.is_empty() {
+            if action.kind == "click" {
+                "Click here".into()
+            } else {
+                "Move here".into()
+            }
+        } else {
+            action.label.clone()
+        },
+        mode,
+    });
+    session.guide_confirmed.store(false, Ordering::SeqCst);
+    session.log("laptop", format!("Blue {} target displayed.", action.kind));
+    *pending = Some(PendingAction {
+        action,
+        started: Instant::now(),
+        click_seq: input::clicks(),
+    });
+    Ok(())
+}
+
+#[tauri::command]
+fn get_pointer(session: tauri::State<Session>) -> Option<actions::Pointer> {
+    if session.active() {
+        session.pointer.lock().unwrap().clone()
+    } else {
+        None
+    }
+}
+#[tauri::command]
+fn complete_guidance(
+    window: tauri::WebviewWindow,
+    session: tauri::State<Session>,
+) -> Result<(), String> {
+    main_only(&window)?;
+    if !session.active()
+        || session.snapshot.lock().unwrap().mode != "guide"
+        || session.pointer.lock().unwrap().is_none()
+    {
+        return Err("There is no active guide target.".into());
+    }
+    session.guide_confirmed.store(true, Ordering::SeqCst);
+    Ok(())
+}
+#[tauri::command]
+fn test_pointer(
+    window: tauri::WebviewWindow,
+    x: f64,
+    y: f64,
+    kind: String,
+    session: tauri::State<Session>,
+) -> Result<(), String> {
+    main_only(&window)?;
+    if !session.active() {
+        return Err("Start a task session first.".into());
+    }
+    let frame = session
+        .last_frame
+        .lock()
+        .unwrap()
+        .clone()
+        .ok_or("Wait for the first screen frame to reach UNO Q.")?;
+    let action = actions::Action {
+        action_id: "manual-test".into(),
+        task_id: "test".into(),
+        frame_id: frame.0.clone(),
+        kind: kind.clone(),
+        x,
+        y,
+        label: String::new(),
+    };
+    action.validate("test", &frame.0)?;
+    session
+        .sender
+        .lock()
+        .unwrap()
+        .as_ref()
+        .ok_or("USB connection is closed.")?
+        .send(Command::Test { x, y, kind })
+        .map_err(|_| "USB connection is closed.".to_string())?;
+    session.log("laptop", "Manual pointer test requested through UNO Q.");
     Ok(())
 }
 
@@ -294,12 +516,16 @@ fn run_device(
         "laptop",
         "Device verified. Task and screen sharing require the UNO Q receiver service.",
     );
+    let mut action_poll = Instant::now();
+    let mut pending_action: Option<PendingAction> = None;
+    let mut seen_actions = HashSet::new();
     let mut active_id: Option<String> = None;
     let mut heartbeat = Instant::now();
     let mut frame_time = Instant::now() - Duration::from_secs(4);
     while !session.cancel.load(Ordering::SeqCst) {
         let stopping = session.snapshot.lock().unwrap().task_phase == "stopping";
         if stopping {
+            pending_action = None;
             if let Some(id) = active_id.take() {
                 // Stop locally first; notify the board if the cable is still available.
                 let _ = exchange(
@@ -317,42 +543,76 @@ fn run_device(
             while receiver.try_recv().is_ok() {}
             session.snapshot.lock().unwrap().task_phase = "stopped".into();
         }
-        if let Ok(Command::Task { id, mode, text }) = receiver.try_recv() {
-            if cancelled(session, true) {
-                continue;
-            }
-            active_id = Some(id.clone());
-            match exchange(
-                port.as_mut(),
-                session,
-                json!({"type":"task","task_id":id,"mode":mode,"text":text}),
-                "task_received",
-                5,
-                true,
-            ) {
-                Ok(Some(_)) => {
-                    let mut state = session.snapshot.lock().unwrap();
-                    if !cancelled(session, true) {
-                        state.task_phase = "active".into();
-                        state.message="Received by UNO Q. Starting primary-screen sharing. AI is not installed yet.".into();
-                    }
-                    drop(state);
-                    session.log(
+        match receiver.try_recv() {
+            Ok(Command::Task { id, mode, text }) => {
+                pending_action = None;
+                seen_actions.clear();
+                if cancelled(session, true) {
+                    continue;
+                }
+                active_id = Some(id.clone());
+                match exchange(
+                    port.as_mut(),
+                    session,
+                    json!({"type":"task","task_id":id,"mode":mode,"text":text}),
+                    "task_received",
+                    5,
+                    true,
+                ) {
+                    Ok(Some(_)) => {
+                        let mut state = session.snapshot.lock().unwrap();
+                        if !cancelled(session, true) {
+                            state.task_phase = "active".into();
+                            state.message="Received by UNO Q. Starting primary-screen sharing. AI is not installed yet.".into();
+                        }
+                        drop(state);
+                        session.log(
                         "laptop",
                         "UNO Q acknowledged the task. Waiting for the visible sharing indicators.",
                     );
-                    frame_time = Instant::now() - Duration::from_secs(4);
+                        frame_time = Instant::now() - Duration::from_secs(4);
+                    }
+                    Ok(None) => {}
+                    Err(error) => {
+                        session.log("laptop", &error);
+                        session.stop(&error);
+                    }
                 }
-                Ok(None) => {}
-                Err(error) => {
-                    session.log("laptop", &error);
-                    session.stop(&error);
+                heartbeat = Instant::now();
+            }
+            Ok(Command::Test { x, y, kind }) => {
+                let id = session.snapshot.lock().unwrap().task_id.clone();
+                if session.active() {
+                    match exchange(
+                        port.as_mut(),
+                        session,
+                        json!({"type":"test_action","task_id":id,"kind":kind,"x":x,"y":y}),
+                        "action_queued",
+                        3,
+                        true,
+                    ) {
+                        Ok(_) => action_poll = Instant::now() - Duration::from_secs(1),
+                        Err(error) => session.log("laptop", &error),
+                    }
                 }
             }
-            heartbeat = Instant::now();
+            _ => {}
+        }
+        if session.active() && session.indicators_ready.load(Ordering::SeqCst) {
+            if let Err(error) = process_actions(
+                port.as_mut(),
+                session,
+                &mut pending_action,
+                &mut seen_actions,
+                &mut action_poll,
+            ) {
+                session.log("laptop", &error);
+                session.stop(&error);
+            }
         }
         if session.active()
             && session.indicators_ready.load(Ordering::SeqCst)
+            && (pending_action.is_none() || session.snapshot.lock().unwrap().mode == "guide")
             && frame_time.elapsed() >= Duration::from_secs(3)
         {
             let result = screen::capture().and_then(|jpeg| {
@@ -473,13 +733,16 @@ fn start_task(
     if mode != "do" && mode != "guide" {
         return Err("Choose Do it for me or Guide me.".into());
     }
+    if mode == "do" && !input::ready() {
+        return Err("Physical-input monitoring is unavailable. Use Guide me instead.".into());
+    }
     let id = uuid::Uuid::new_v4().to_string();
     {
         let mut state = session.snapshot.lock().unwrap();
         if state.phase != "connected" {
             return Err("Connect the UNO Q first.".into());
         }
-        if !["tasks_v1", "screen_v1"]
+        if !["tasks_v1", "screen_v1", "actions_v1"]
             .iter()
             .all(|required| state.capabilities.iter().any(|c| c == required))
         {
@@ -495,6 +758,9 @@ fn start_task(
         state.mode = mode.clone();
         state.message = "Sending your task to UNO Q…".into();
         state.frames = 0;
+        *session.last_frame.lock().unwrap() = None;
+        *session.pointer.lock().unwrap() = None;
+        session.guide_confirmed.store(false, Ordering::SeqCst);
     }
     let result = session
         .sender
@@ -576,10 +842,11 @@ fn main() {
                     origin.y + (12.0 * scale) as i32,
                 ))?;
             }
+            input::start_monitor();
             window.show()?;
             let handle = app.handle().clone();
             let session = app.state::<Session>().inner().clone();
-            session.log("laptop", "Bob 0.3 started. No screen is captured until a task is acknowledged and sharing indicators are visible.");
+            session.log("laptop", "Bob 0.4 started. No screen is captured until a task is acknowledged and sharing indicators are visible.");
             std::thread::spawn(move || {
                 let mut shown = false;
                 loop {
@@ -589,6 +856,11 @@ fn main() {
                     };
                     if running && screen::escape_down() {
                         session.stop("Escape pressed. Screen sharing is off.");
+                    }
+                    let auto=session.active() && session.snapshot.lock().unwrap().mode=="do";
+                    input::set_auto(auto);
+                    if auto && (!input::ready() || input::physical_seen()) {
+                        session.stop("You took over the keyboard or mouse. Auto mode stopped.");
                     }
                     let active = session.active();
                     if active != shown {
@@ -623,7 +895,7 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             list_ports, get_state, get_logs, diagnose_usb, connect_device,
-            disconnect_device, start_task, stop_task
+            disconnect_device, start_task, stop_task, get_pointer, test_pointer, complete_guidance
         ])
         .run(tauri::generate_context!())
         .expect("Could not start Bob the Butler");
@@ -644,6 +916,7 @@ mod tests {
                 "hello" => "hello_ack",
                 "screen_begin" => "screen_ready",
                 "screen_end" => "screen_received",
+                "action_result" => "action_recorded",
                 _ => return Ok(data.len()),
             };
             let log = json!({"type":"log","device":"device-companion","protocol":1,"message":"Receiver ready"});
@@ -701,6 +974,84 @@ mod tests {
         send_frame(&mut port, &s, "task-1", b"late-frame").unwrap();
         assert_eq!(port.writes, count);
         assert_eq!(s.snapshot.lock().unwrap().frames, 1);
+    }
+    #[test]
+    fn guide_completion_does_not_dispatch_os_input() {
+        let s = Session::new();
+        s.task_cancel.store(false, Ordering::SeqCst);
+        {
+            let mut state = s.snapshot.lock().unwrap();
+            state.phase = "connected".into();
+            state.task_phase = "active".into();
+            state.mode = "guide".into();
+        }
+        s.guide_confirmed.store(true, Ordering::SeqCst);
+        let action = actions::Action {
+            action_id: "guide".into(),
+            task_id: "task".into(),
+            frame_id: "frame".into(),
+            kind: "click".into(),
+            x: 0.5,
+            y: 0.5,
+            label: String::new(),
+        };
+        let mut pending = Some(PendingAction {
+            action,
+            started: Instant::now(),
+            click_seq: 0,
+        });
+        let mut io = FakeTransport {
+            pending: VecDeque::new(),
+            writes: 0,
+        };
+        process_actions(
+            &mut io,
+            &s,
+            &mut pending,
+            &mut HashSet::new(),
+            &mut Instant::now(),
+        )
+        .unwrap();
+        assert!(pending.is_none());
+        assert_eq!(io.writes, 1);
+    }
+    #[test]
+    fn stale_auto_target_fails_before_os_input() {
+        let s = Session::new();
+        s.task_cancel.store(false, Ordering::SeqCst);
+        {
+            let mut state = s.snapshot.lock().unwrap();
+            state.task_phase = "active".into();
+            state.mode = "do".into();
+        }
+        *s.last_frame.lock().unwrap() = Some(("new-frame".into(), Instant::now()));
+        let action = actions::Action {
+            action_id: "auto".into(),
+            task_id: "task".into(),
+            frame_id: "old-frame".into(),
+            kind: "click".into(),
+            x: 0.5,
+            y: 0.5,
+            label: String::new(),
+        };
+        let mut pending = Some(PendingAction {
+            action,
+            started: Instant::now() - Duration::from_secs(1),
+            click_seq: 0,
+        });
+        let mut io = FakeTransport {
+            pending: VecDeque::new(),
+            writes: 0,
+        };
+        assert!(process_actions(
+            &mut io,
+            &s,
+            &mut pending,
+            &mut HashSet::new(),
+            &mut Instant::now()
+        )
+        .is_err());
+        assert_eq!(io.writes, 0);
     }
     #[test]
     fn validates_reply_identity_nonce_and_type() {

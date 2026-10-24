@@ -40,14 +40,16 @@ The existing COM-port connection remains for ESP32 testing. Its old handshake sk
 ## What this service does
 
 - Replies to the versioned hello and heartbeat.
-- Advertises `tasks_v1` and `screen_v1` capabilities, and explicitly reports `ai_ready: false`.
+- Advertises `tasks_v1`, `screen_v1` and `actions_v1` capabilities, and explicitly reports `ai_ready: false`.
 - Receives a task with a unique ID, selected mode (`do` or `guide`), and text; replies `task_received` with the same ID.
 - Receives small JPEG screen frames in ordered base64 chunks, checks total length and SHA-256, and acknowledges each completed frame.
 - Keeps only the most recent frame in RAM. Screens are not written to disk.
 - Drops task and frame references on Stop, a closed connection, an idle host heartbeat, or an eight-second session lease expiry.
 - Sends metadata logs to Bob's Debug view. Task text and image payloads are not logged.
 
-It does **not** run an AI model, produce guidance/pointers, or issue mouse or keyboard actions. Both modes are carried through the protocol so the model/action layer can be added next.
+It does **not** run an AI model yet. The action layer is ready: `Receiver.queue_action(kind, x, y, label)` accepts one move/click target at a time, with normalized primary-screen coordinates. The Windows widget's explicit Debug test uses this entry point. There are no default or automatic demo targets.
+
+Guide sessions display the target and wait for the user. Auto sessions request a fresh permit before moving/clicking the real Windows cursor. The Q never directly injects laptop input; the Windows executor enforces mode, task/frame IDs, freshness, Stop and physical takeover. Stop clears queued/in-flight actions as well as screen buffers. Results are acknowledged idempotently; completed action IDs are bounded to 512 per task.
 
 ## Wire protocol
 
@@ -62,6 +64,10 @@ UTF-8 JSON, one object per newline. Messages use `protocol: 1` and a request `no
 | `screen_chunk` with IDs, zero-based `index`, base64 `data` | No response per chunk |
 | `screen_end` with IDs and `sha256` | `screen_received` |
 | `stop_task` with `task_id` | `task_stopped` |
+| `test_action` with `task_id`, `kind`, normalized `x`, `y` | `action_queued` |
+| `next_action` with task/frame IDs | `action` containing one target or null |
+| `action_permit` with task/frame/action IDs (Auto only) | `action_permitted` |
+| `action_result` with task/action IDs and status | `action_recorded` |
 
 The receiver may send `log` messages before a reply, or an `error` with the request nonce. Stop is idempotent. Duplicate task requests with the same ID return the original receipt rather than starting another task. Late screen messages for stopped tasks are rejected.
 
