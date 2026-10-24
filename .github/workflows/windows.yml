@@ -45,6 +45,8 @@ jobs:
         run: cargo test --manifest-path src-tauri/Cargo.toml
       - name: Check UNO Q receiver
         run: python -m unittest discover -s uno-q -p "test_*.py" -v
+      - name: Check AI output and tool contracts
+        run: python -m unittest discover -s uno-q/ai -p "test_*.py" -v
       - name: Build Windows executable and installer
         run: pnpm tauri build
       - name: Copy portable executable to repository root
