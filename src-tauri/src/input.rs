@@ -1,4 +1,4 @@
-//! Native cursor output and physical-input monitoring. Guide mode never calls execute().
+//! Native cursor/keyboard output and Guide-mode click monitoring. Escape uses the session watchdog.
 #[cfg(windows)]
 mod platform {
     use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
@@ -8,8 +8,6 @@ mod platform {
         UI::{Input::KeyboardAndMouse::*, WindowsAndMessaging::*},
     };
     static READY: AtomicBool = AtomicBool::new(false);
-    static AUTO: AtomicBool = AtomicBool::new(false);
-    static PHYSICAL: AtomicBool = AtomicBool::new(false);
     static CLICKS: AtomicU64 = AtomicU64::new(0);
     static CLICK_X: AtomicI32 = AtomicI32::new(0);
     static CLICK_Y: AtomicI32 = AtomicI32::new(0);
@@ -17,9 +15,6 @@ mod platform {
         if code >= 0 {
             let data = &*(l as *const MSLLHOOKSTRUCT);
             if data.flags & 1 == 0 {
-                if AUTO.load(Ordering::SeqCst) {
-                    PHYSICAL.store(true, Ordering::SeqCst);
-                }
                 if w as u32 == WM_LBUTTONDOWN {
                     CLICK_X.store(data.pt.x, Ordering::SeqCst);
                     CLICK_Y.store(data.pt.y, Ordering::SeqCst);
@@ -29,27 +24,11 @@ mod platform {
         }
         CallNextHookEx(std::ptr::null_mut(), code, w, l)
     }
-    unsafe extern "system" fn keyboard_hook(code: i32, w: WPARAM, l: LPARAM) -> LRESULT {
-        if code >= 0 && AUTO.load(Ordering::SeqCst) {
-            let data = &*(l as *const KBDLLHOOKSTRUCT);
-            if data.flags & 0x10 == 0 {
-                PHYSICAL.store(true, Ordering::SeqCst);
-            }
-        }
-        CallNextHookEx(std::ptr::null_mut(), code, w, l)
-    }
     pub fn start_monitor() {
         std::thread::spawn(|| unsafe {
             let module = GetModuleHandleW(std::ptr::null());
             let mouse_hook = SetWindowsHookExW(WH_MOUSE_LL, Some(mouse), module, 0);
-            let key_hook = SetWindowsHookExW(WH_KEYBOARD_LL, Some(keyboard_hook), module, 0);
-            if mouse_hook.is_null() || key_hook.is_null() {
-                if !mouse_hook.is_null() {
-                    UnhookWindowsHookEx(mouse_hook);
-                }
-                if !key_hook.is_null() {
-                    UnhookWindowsHookEx(key_hook);
-                }
+            if mouse_hook.is_null() {
                 return;
             }
             READY.store(true, Ordering::SeqCst);
@@ -60,23 +39,10 @@ mod platform {
             }
             READY.store(false, Ordering::SeqCst);
             UnhookWindowsHookEx(mouse_hook);
-            UnhookWindowsHookEx(key_hook);
         });
     }
     pub fn ready() -> bool {
         READY.load(Ordering::SeqCst)
-    }
-    pub fn set_auto(active: bool) {
-        if !active {
-            AUTO.store(false, Ordering::SeqCst);
-            PHYSICAL.store(false, Ordering::SeqCst);
-        } else if !AUTO.load(Ordering::SeqCst) {
-            PHYSICAL.store(false, Ordering::SeqCst);
-            AUTO.store(true, Ordering::SeqCst);
-        }
-    }
-    pub fn physical_seen() -> bool {
-        PHYSICAL.load(Ordering::SeqCst)
     }
     pub fn keyboard(
         tool: &str,
@@ -102,7 +68,7 @@ mod platform {
             }
         };
         let tap = |vk: u16, scan: u16, flags: u32| -> Result<(), String> {
-            if !allowed() || physical_seen() {
+            if !allowed() {
                 return Err("Keyboard step cancelled.".into());
             }
             send(vk, scan, flags)?;
@@ -137,7 +103,7 @@ mod platform {
                     "ctrl+a" => 0x41,
                     _ => return Err("Unsupported shortcut".into()),
                 };
-                if !allowed() || physical_seen() {
+                if !allowed() {
                     return Err("Shortcut cancelled.".into());
                 }
                 send(VK_CONTROL, 0, 0)?;
@@ -181,7 +147,7 @@ mod platform {
         (px - tx).abs() <= 24 && (py - ty).abs() <= 24
     }
     pub fn execute(x: f64, y: f64, click: bool, allowed: impl Fn() -> bool) -> Result<(), String> {
-        if !ready() || physical_seen() || !allowed() {
+        if !ready() || !allowed() {
             return Err("Auto action cancelled before cursor movement.".into());
         }
         let (px, py) = target(x, y);
@@ -203,14 +169,14 @@ mod platform {
                 time: 0,
                 dwExtraInfo: 0x424f42,
             };
-            if !allowed() || physical_seen() {
+            if !allowed() {
                 return Err("Auto action cancelled.".into());
             }
             if SendInput(1, &movement, std::mem::size_of::<INPUT>() as i32) != 1 {
                 return Err("Windows blocked cursor movement. Session stopped.".into());
             }
             if click {
-                if !allowed() || physical_seen() {
+                if !allowed() {
                     return Err("Auto click cancelled.".into());
                 }
                 let mut pair: [INPUT; 2] = std::mem::zeroed();
@@ -241,12 +207,6 @@ pub use platform::*;
 pub fn start_monitor() {}
 #[cfg(not(windows))]
 pub fn ready() -> bool {
-    false
-}
-#[cfg(not(windows))]
-pub fn set_auto(_: bool) {}
-#[cfg(not(windows))]
-pub fn physical_seen() -> bool {
     false
 }
 #[cfg(not(windows))]

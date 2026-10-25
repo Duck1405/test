@@ -262,7 +262,7 @@ function App() {
         <div className="composer-controls"><select aria-label="Assistant mode" value={mode} disabled={sessionBusy} onChange={e => setMode(e.target.value)}><option value="do">Do it for me</option><option value="guide">Guide me</option></select>
           <button className="send" type="submit" disabled={!task.trim() || sessionBusy || !supported} title="Send task and share primary screen" aria-label="Send task and share primary screen">↑</button></div>
       </form>
-      <p className="consent-note">{mode === 'do' ? 'Auto uses Chrome and keyboard. Physical input stops it.' : 'Guide shows steps. You use the keyboard and mouse.'} <kbd>Esc</kbd> stops.</p>
+      <p className="consent-note">{mode === 'do' ? 'Auto uses Chrome and keyboard.' : 'Guide shows steps. You use the keyboard and mouse.'} <kbd>Esc</kbd> stops.</p>
     </> : <>
       <section className="hero"><DeviceIcon connected={false} /><div><h1>Hey, let’s connect.</h1><p>Plug in your UNO Q to get started.</p></div></section>
       <div className="status" role="status" aria-live="polite"><span className={busy ? 'pulse' : ''} />{status}</div>

@@ -111,7 +111,6 @@ impl Session {
                 self.task_cancel.store(true, Ordering::SeqCst);
                 self.indicators_ready.store(false, Ordering::SeqCst);
                 *self.pointer.lock().unwrap() = None;
-                input::set_auto(false);
                 s.task_phase = "stopping".into();
                 s.planner_since = 0;
                 s.message = reason.into();
@@ -446,7 +445,9 @@ fn process_planner(
                     .duration_since(UNIX_EPOCH)
                     .unwrap_or_default()
                     .as_millis() as u64;
-                state.message="Thinking locally on UNO Q. The next step can take 10–25 seconds; Auto stops if you use the mouse or keyboard.".into();
+                state.message =
+                    "Thinking locally on UNO Q. Preparing the next step; press Esc to stop Auto."
+                        .into();
             }
         }
         Some("error") => {
@@ -538,7 +539,7 @@ fn process_actions(
             }
         } else {
             // Let the visible blue target settle before moving/clicking. This
-            // wait is nonblocking so Stop, physical input and heartbeats work.
+            // wait is nonblocking so Escape, Stop and heartbeats work.
             if step.started.elapsed() < Duration::from_millis(450) {
                 return Ok(());
             }
@@ -993,7 +994,7 @@ fn start_task(
         return Err("Choose Do it for me or Guide me.".into());
     }
     if mode == "do" && !input::ready() {
-        return Err("Physical-input monitoring is unavailable. Use Guide me instead.".into());
+        return Err("Native input is unavailable. Use Guide me instead.".into());
     }
     let id = uuid::Uuid::new_v4().to_string();
     {
@@ -1119,11 +1120,6 @@ fn main() {
                     };
                     if running && screen::escape_down() {
                         session.stop("Escape pressed. Screen sharing is off.");
-                    }
-                    let auto=session.active() && session.snapshot.lock().unwrap().mode=="do";
-                    input::set_auto(auto);
-                    if auto && (!input::ready() || input::physical_seen()) {
-                        session.stop("You took over the keyboard or mouse. Auto mode stopped.");
                     }
                     let active = session.active();
                     if active != shown {

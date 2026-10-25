@@ -209,7 +209,7 @@ pub fn browser_window() -> (bool, bool, String) {
 
 pub fn execute(plan: &Plan, allowed: impl Fn() -> bool) -> Result<(), String> {
     plan.validate()?;
-    if !allowed() || crate::input::physical_seen() {
+    if !allowed() {
         return Err("Planner action cancelled.".into());
     }
     #[cfg(windows)]
