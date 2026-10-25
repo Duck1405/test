@@ -95,17 +95,18 @@ class Receiver:
                 return [reply('planner_step', task_id=self.task['id'], state='error', message='Planner step limit reached.')]
             if self.plan_step is None:
                 result = self.planner.take()
+                if result is None:
+                    observation = packet.get('observation')
+                    if not isinstance(observation, dict) or len(json.dumps(observation)) > 2000:
+                        return [reply('error', message='Invalid planner observation.')]
+                    self.planner.start(self.task['text'], observation)
+                    result = self.planner.take()
                 if result:
                     if 'error' in result:
                         return [reply('planner_step', task_id=self.task['id'], state='error', message=result['error'])]
                     plan = parse_tool(result['plan'])
                     self.plan_step = dict(id=str(uuid.uuid4()), plan=plan, seconds=result['seconds'])
                     self.plan_count += 1
-                else:
-                    observation = packet.get('observation')
-                    if not isinstance(observation, dict) or len(json.dumps(observation)) > 2000:
-                        return [reply('error', message='Invalid planner observation.')]
-                    self.planner.start(self.task['text'], observation)
             return [reply('planner_step', task_id=self.task['id'], state='ready' if self.plan_step else 'thinking', step=self.plan_step)]
         if kind == 'planner_permit':
             if not self.plan_step or packet.get('step_id') != self.plan_step['id'] or self.task['mode'] != 'do':

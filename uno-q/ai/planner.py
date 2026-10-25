@@ -5,6 +5,7 @@ import threading
 import time
 import urllib.request
 from .tool_plan import TOOLS, parse_tool
+from .search_workflow import is_search, prepare_query, SearchWorkflow
 
 SYSTEM = ('You are Bob, a desktop tool planner. Choose exactly one next tool from the allowed tools. '
           'Return only JSON with tool and args. Use the current observation and tool results; do not assume a failed action succeeded. '
@@ -27,8 +28,10 @@ def infer(goal, history, observation):
 
 
 class Planner:
-    def __init__(self, inference=infer):
+    def __init__(self, inference=infer, query_inference=prepare_query):
         self.inference = inference
+        self.query_inference = query_inference
+        self.search = None
         self.lock = threading.Lock()
         self.generation = 0
         self.busy = False
@@ -40,25 +43,35 @@ class Planner:
             self.generation += 1
             self.result = None
             self.history = []
+            self.search = None
             # Keep busy until the old HTTP request exits: bounded threads and RAM.
 
     def start(self, goal, observation):
         with self.lock:
             if self.busy or self.result is not None:
                 return False
+            if self.search is not None:
+                self.result = {'plan':parse_tool(self.search.next(observation)), 'seconds':0.0}
+                return True
             self.busy = True
             generation = self.generation
             history = copy.deepcopy(self.history)
         def work():
             started = time.monotonic()
+            search = None
             try:
-                result = {'plan': self.inference(goal, history, observation)}
+                if not history and is_search(goal):
+                    search=SearchWorkflow(self.query_inference(goal))
+                    result={'plan':parse_tool(search.next(observation))}
+                else:
+                    result = {'plan': self.inference(goal, history, observation)}
             except Exception:
                 result = {'error': 'Local planner failed. Check the model service in Debug.'}
             result['seconds'] = round(time.monotonic() - started, 3)
             with self.lock:
                 self.busy = False
                 if self.generation == generation:
+                    self.search=search
                     self.result = result
         threading.Thread(target=work, daemon=True).start()
         return True
@@ -71,3 +84,5 @@ class Planner:
     def record(self, plan, result):
         with self.lock:
             self.history = (self.history + [dict(plan, result=result)])[-4:]
+            if self.search is not None:
+                self.search.record(plan,result)

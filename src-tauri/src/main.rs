@@ -416,7 +416,7 @@ fn process_planner(
         *pending = None;
         *session.pointer.lock().unwrap() = None;
         session.snapshot.lock().unwrap().planner_since = 0;
-        *poll = Instant::now();
+        *poll = Instant::now() - Duration::from_millis(1500);
         // Focus failure must never turn into typing in another app.
         if let Err(error) = result {
             return Err(error);
@@ -1078,6 +1078,7 @@ fn main() {
         .manage(Session::new())
         .setup(|app| {
             let window = app.get_webview_window("main").ok_or("Main widget is missing")?;
+            window.set_always_on_top(true)?;
             if let Some(monitor) = window.primary_monitor()? {
                 let scale = monitor.scale_factor();
                 let origin = monitor.position();
