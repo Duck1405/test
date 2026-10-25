@@ -62,3 +62,8 @@ class SearchWorkflow:
         expected=transitions.get(self.stage)
         if expected and plan['tool']==expected[0]:
             self.stage=expected[1]
+
+    def verify(self,obs):
+        return (self.stage=='verify' and obs.get('bridge_ready') is True
+                and obs.get('page_loading') is False
+                and self.query.casefold() in str(obs.get('page_title','')).casefold())

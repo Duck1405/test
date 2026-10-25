@@ -25,21 +25,25 @@ class Receiver:
         self.last_frame = None  # One JPEG in RAM; never written to disk.
         self.last_seen = 0
         self.last_frame_id = None
+        self.last_frame_at = 0
         self.queued_action = None
         self.inflight_action = None
         self.completed_actions = set()
         self.planner = Planner()
         self.plan_step = None
         self.plan_count = 0
+        self.plan_source_frame = None
         self.ai_ready = Path('/opt/bob-the-butler/model/bob-q4_k_m.gguf').is_file()
 
     def stop(self):
         self.task = self.frame = self.last_frame = None
         self.last_frame_id = self.queued_action = self.inflight_action = None
+        self.last_frame_at = 0
         self.completed_actions.clear()
         self.planner.reset()
         self.plan_step = None
         self.plan_count = 0
+        self.plan_source_frame = None
 
     def expire(self):
         if self.task and time.monotonic() - self.last_seen > LEASE_SECONDS:
@@ -60,8 +64,8 @@ class Receiver:
         self.expire()
         self.last_seen = time.monotonic()
         if kind == 'hello':
-            return [reply('hello_ack', board='Arduino UNO Q', service_version='0.5.0',
-                          capabilities=['tasks_v1', 'screen_v1', 'actions_v1', 'planner_v1'], ai_ready=self.ai_ready, process_id=os.getpid())]
+            return [reply('hello_ack', board='Arduino UNO Q', service_version='0.6.0',
+                          capabilities=['tasks_v1', 'screen_v1', 'actions_v1', 'planner_v1', 'verification_v1'], ai_ready=self.ai_ready, process_id=os.getpid())]
         if kind == 'ping':
             if self.task and packet.get('task_id') != self.task['id']:
                 self.stop()
@@ -97,8 +101,9 @@ class Receiver:
                 result = self.planner.take()
                 if result is None:
                     observation = packet.get('observation')
-                    if not isinstance(observation, dict) or len(json.dumps(observation)) > 2000:
+                    if not isinstance(observation, dict) or len(json.dumps(observation)) > 4000:
                         return [reply('error', message='Invalid planner observation.')]
+                    observation = dict(observation, frame_id=self.last_frame_id)
                     self.planner.start(self.task['text'], observation)
                     result = self.planner.take()
                 if result:
@@ -106,11 +111,27 @@ class Receiver:
                         return [reply('planner_step', task_id=self.task['id'], state='error', message=result['error'])]
                     plan = parse_tool(result['plan'])
                     self.plan_step = dict(id=str(uuid.uuid4()), plan=plan, seconds=result['seconds'])
+                    self.plan_source_frame = self.last_frame_id
                     self.plan_count += 1
             return [reply('planner_step', task_id=self.task['id'], state='ready' if self.plan_step else 'thinking', step=self.plan_step)]
+        if kind == 'planner_verify':
+            observation=packet.get('observation')
+            if (not self.plan_step or self.plan_step['id']!=packet.get('step_id')
+                    or self.plan_step['plan']['tool']!='done' or not self.last_frame_id
+                    or packet.get('frame_id')!=self.last_frame_id
+                    or self.last_frame_id==self.plan_source_frame
+                    or time.monotonic()-self.last_frame_at>5
+                    or not isinstance(observation,dict) or len(json.dumps(observation))>4000):
+                return [reply('error',message='Verification requires a fresh acknowledged screenshot and current completion step.')]
+            verified=self.planner.verify(dict(observation,frame_id=self.last_frame_id))
+            return [reply('verification_result',task_id=self.task['id'],frame_id=self.last_frame_id,
+                          verdict='verified' if verified else 'unknown')]
         if kind == 'planner_permit':
             if not self.plan_step or packet.get('step_id') != self.plan_step['id'] or self.task['mode'] != 'do':
                 return [reply('error', message='Planner step is no longer authorized.')]
+            plan=self.plan_step['plan']
+            if plan['tool']=='click' and (plan['args']['frame_id']!=self.last_frame_id or time.monotonic()-self.last_frame_at>=10):
+                return [reply('error',message='Click screenshot is stale.')]
             return [reply('planner_permitted', task_id=self.task['id'], step_id=self.plan_step['id'])]
         if kind == 'planner_result':
             if not self.plan_step or packet.get('step_id') != self.plan_step['id']:
@@ -189,6 +210,7 @@ class Receiver:
                 return [reply('error', message='Screen frame failed validation.')]
             self.last_frame = bytes(frame['data'])
             self.last_frame_id = frame['id']
+            self.last_frame_at = time.monotonic()
             return [log(f'Screen frame received: {len(self.last_frame)} bytes (RAM only).'),
                     reply('screen_received', task_id=self.task['id'], frame_id=frame['id'])]
         return [reply('error', message='Unsupported message type.')]

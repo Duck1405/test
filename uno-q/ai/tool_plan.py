@@ -4,6 +4,7 @@ This module builds argument arrays only. The native session controller must enfo
 USB permits, foreground app checks, mode, Stop and input takeover before execution.
 """
 import json
+import math
 from urllib.parse import urlparse
 
 KEYS = {'enter', 'tab', 'esc', 'backspace', 'up', 'down', 'left', 'right'}
@@ -24,6 +25,17 @@ def parse_tool(text):
     if not isinstance(obj, dict) or set(obj) != {'tool', 'args'}:
         raise ValueError('Expected exactly tool and args.')
     tool, args = obj['tool'], obj['args']
+    if tool=='click':
+        if not isinstance(args,dict) or set(args)!={'x','y','frame_id','target_id','label'}:
+            raise ValueError('Invalid click fields.')
+        for axis in ('x','y'):
+            if type(args[axis]) not in (int,float) or not math.isfinite(args[axis]) or not 0<=args[axis]<=1:
+                raise ValueError('Click is outside the screen.')
+        for key in ('frame_id','target_id','label'):
+            value=args[key]
+            if not isinstance(value,str) or not value or len(value.encode())>120 or any(ord(c)<32 for c in value):
+                raise ValueError('Invalid click evidence.')
+        return obj
     if not isinstance(tool, str) or tool not in TOOLS or not isinstance(args, dict) or set(args) != set(TOOLS[tool]):
         raise ValueError('Unknown tool or arguments.')
     for value in args.values():

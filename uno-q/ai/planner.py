@@ -6,6 +6,7 @@ import time
 import urllib.request
 from .tool_plan import TOOLS, parse_tool
 from .search_workflow import is_search, prepare_query, SearchWorkflow
+from .media_workflow import is_media, MediaWorkflow
 
 SYSTEM = ('You are Bob, a desktop tool planner. Choose exactly one next tool from the allowed tools. '
           'Return only JSON with tool and args. Use the current observation and tool results; do not assume a failed action succeeded. '
@@ -37,6 +38,7 @@ class Planner:
         self.busy = False
         self.result = None
         self.history = []
+        self.goal = ''
 
     def reset(self):
         with self.lock:
@@ -44,12 +46,14 @@ class Planner:
             self.result = None
             self.history = []
             self.search = None
+            self.goal = ''
             # Keep busy until the old HTTP request exits: bounded threads and RAM.
 
     def start(self, goal, observation):
         with self.lock:
             if self.busy or self.result is not None:
                 return False
+            self.goal = goal
             if self.search is not None:
                 self.result = {'plan':parse_tool(self.search.next(observation)), 'seconds':0.0}
                 return True
@@ -60,8 +64,8 @@ class Planner:
             started = time.monotonic()
             search = None
             try:
-                if not history and is_search(goal):
-                    search=SearchWorkflow(self.query_inference(goal))
+                if not history and (is_media(goal) or is_search(goal)):
+                    search=(MediaWorkflow if is_media(goal) else SearchWorkflow)(self.query_inference(goal))
                     result={'plan':parse_tool(search.next(observation))}
                 else:
                     result = {'plan': self.inference(goal, history, observation)}
@@ -86,3 +90,10 @@ class Planner:
             self.history = (self.history + [dict(plan, result=result)])[-4:]
             if self.search is not None:
                 self.search.record(plan,result)
+
+    def verify(self,observation):
+        with self.lock:
+            if self.search is not None:
+                return self.search.verify(observation)
+            return (self.goal.lower().strip() in ('open chrome','open chrome tab','open google','open a chrome tab')
+                    and observation.get('bridge_ready') is True and bool(observation.get('page_title')))

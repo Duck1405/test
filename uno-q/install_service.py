@@ -79,7 +79,7 @@ def main():
     os.chmod(APP_DIR, 0o755)
     atomic_write(APP_DIR / 'bob_service.py', script)
     (APP_DIR / 'ai').mkdir(exist_ok=True)
-    for name in ('__init__.py', 'planner.py', 'tool_plan.py', 'search_workflow.py'):
+    for name in ('__init__.py', 'planner.py', 'tool_plan.py', 'search_workflow.py', 'media_workflow.py'):
         atomic_write(APP_DIR / 'ai' / name, (source / 'ai' / name).read_bytes())
     if args.with_ai:
         staging = Path('/home/arduino/bob-ai')

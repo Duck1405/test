@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 mod actions;
+mod browser_bridge;
 mod input;
 mod screen;
 mod tools;
@@ -63,6 +64,7 @@ struct Session {
     pointer: Arc<Mutex<Option<actions::Pointer>>>,
     last_frame: Arc<Mutex<Option<(String, Instant)>>>,
     guide_confirmed: Arc<AtomicBool>,
+    refresh_frame: Arc<AtomicBool>,
 }
 impl Session {
     fn new() -> Self {
@@ -88,6 +90,7 @@ impl Session {
             pointer: Arc::new(Mutex::new(None)),
             last_frame: Arc::new(Mutex::new(None)),
             guide_confirmed: Arc::new(AtomicBool::new(false)),
+            refresh_frame: Arc::new(AtomicBool::new(true)),
         }
     }
     fn log(&self, source: &str, message: impl AsRef<str>) {
@@ -332,24 +335,54 @@ fn process_planner(
             return Ok(());
         }
         if plan.tool == "done" {
+            session.snapshot.lock().unwrap().message =
+                "Checking the result with a fresh screenshot…".into();
+            let jpeg = screen::capture()?;
+            send_frame(port, session, &task, &jpeg)?;
+            if !session.active() {
+                return Ok(());
+            }
+            let observation = browser.observation();
             let (_, chrome, title) = tools::browser_window();
-            if !chrome || !browser.search_result_verified(&title) {
+            let frame = session
+                .last_frame
+                .lock()
+                .unwrap()
+                .clone()
+                .ok_or("No fresh verification frame.")?;
+            let verified = exchange(
+                port,
+                session,
+                json!({"type":"planner_verify","task_id":task,"step_id":step.step.id,"frame_id":frame.0,"observation":observation}),
+                "verification_result",
+                3,
+                true,
+            )?;
+            if verified.is_none() || !session.active() {
+                return Ok(());
+            }
+            if !chrome
+                || !browser.search_result_verified(&title)
+                || !verified
+                    .as_ref()
+                    .is_some_and(|r| r["verdict"] == "verified")
+            {
                 exchange(
                     port,
                     session,
-                    json!({"type":"planner_result","task_id":task,"step_id":step.step.id,"result":{"ok":false,"error":"Search is not complete. Focus the address bar, type the search query, press Enter, and observe the result title."}}),
+                    json!({"type":"planner_result","task_id":task,"step_id":step.step.id,"result":{"ok":false,"error":"The fresh screenshot and browser evidence do not verify completion. Observe the current state and continue."}}),
                     "planner_recorded",
                     3,
                     true,
                 )?;
                 session.snapshot.lock().unwrap().message =
-                    "Search is not complete yet. Planning the next step…".into();
+                    "The result is not verified yet. Checking the next step…".into();
                 *session.pointer.lock().unwrap() = None;
                 *pending = None;
                 *poll = Instant::now();
                 return Ok(());
             }
-            session.stop(&format!("{} · Chrome: {}", plan.instruction(), title));
+            session.stop(&format!("Verified with UNO Q · {}", plan.instruction()));
             *pending = None;
             return Ok(());
         }
@@ -366,6 +399,21 @@ fn process_planner(
         let result = if passive || mode == "guide" {
             Ok(())
         } else {
+            let click_frame = if plan.tool == "click" {
+                let frame = session
+                    .last_frame
+                    .lock()
+                    .unwrap()
+                    .clone()
+                    .ok_or("No screenshot for click.")?;
+                if plan.args["frame_id"] != frame.0 || frame.1.elapsed() >= Duration::from_secs(10)
+                {
+                    return Err("Click target is based on an old screenshot.".into());
+                }
+                Some(frame.1)
+            } else {
+                None
+            };
             if exchange(
                 port,
                 session,
@@ -382,6 +430,7 @@ fn process_planner(
                 session.active()
                     && session.indicators_ready.load(Ordering::SeqCst)
                     && !cancelled(session, true)
+                    && click_frame.is_none_or(|at| at.elapsed() < Duration::from_secs(10))
             })
         };
         if cancelled(session, true) {
@@ -415,9 +464,15 @@ fn process_planner(
         *pending = None;
         *session.pointer.lock().unwrap() = None;
         session.snapshot.lock().unwrap().planner_since = 0;
+        session.refresh_frame.store(true, Ordering::SeqCst);
         *poll = Instant::now() - Duration::from_millis(1500);
         // Focus failure must never turn into typing in another app.
         if let Err(error) = result {
+            if error == "Browser target changed; refreshing." {
+                session.snapshot.lock().unwrap().message =
+                    "The target moved. Refreshing the screenshot…".into();
+                return Ok(());
+            }
             return Err(error);
         }
         return Ok(());
@@ -471,7 +526,11 @@ fn process_planner(
             {
                 return Err("Duplicate or invalid planner step.".into());
             }
-            let instruction = step.plan.instruction();
+            let instruction = if step.plan.tool == "done" {
+                "Checking the final result…".into()
+            } else {
+                step.plan.instruction()
+            };
             {
                 let mut state = session.snapshot.lock().unwrap();
                 state.planner_since = 0;
@@ -492,9 +551,14 @@ fn process_planner(
                 format!("Local planner: {} ({:.2}s).", step.plan.tool, step.seconds),
             );
             *session.pointer.lock().unwrap() = Some(actions::Pointer {
-                x: 0.5,
-                y: 0.08,
-                kind: "tool".into(),
+                x: step.plan.args["x"].as_f64().unwrap_or(0.5),
+                y: step.plan.args["y"].as_f64().unwrap_or(0.08),
+                kind: if step.plan.tool == "click" {
+                    "click"
+                } else {
+                    "tool"
+                }
+                .into(),
                 label: instruction,
                 mode,
             });
@@ -870,7 +934,11 @@ fn run_device(
         if session.active()
             && session.indicators_ready.load(Ordering::SeqCst)
             && (pending_action.is_none() || session.snapshot.lock().unwrap().mode == "guide")
-            && frame_time.elapsed() >= Duration::from_secs(3)
+            && !pending_plan
+                .as_ref()
+                .is_some_and(|p| p.step.plan.tool == "click")
+            && (session.refresh_frame.swap(false, Ordering::SeqCst)
+                || frame_time.elapsed() >= Duration::from_secs(3))
         {
             let result = screen::capture().and_then(|jpeg| {
                 if !cancelled(session, true) {
