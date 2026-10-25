@@ -44,11 +44,14 @@ jobs:
       - name: Check protocol
         shell: pwsh
         run: |
+          $ErrorActionPreference = 'Continue'
+          $PSNativeCommandUseErrorActionPreference = $false
+          $env:CARGO_TERM_COLOR = 'never'
           $diagnostics = & cargo test --manifest-path src-tauri/Cargo.toml 2>&1
           $result = $LASTEXITCODE
           $diagnostics | ForEach-Object { Write-Output $_ }
           if ($result -ne 0) {
-            $diagnostics | Where-Object { "$_" -match '^error|^\s*--> |^\s*[0-9]+\s*\|' } | Select-Object -Last 35 | ForEach-Object { Write-Output "::error::$_" }
+            $diagnostics | Select-Object -Last 40 | ForEach-Object { Write-Output "::error::$_" }
             exit $result
           }
       - name: Check UNO Q receiver

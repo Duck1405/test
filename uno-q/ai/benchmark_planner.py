@@ -25,11 +25,18 @@ def main():
         ({'chrome':'ready','active_window':'Chrome','page_loading':False,'page_title':'NVIDIA stock - Google Search'}, 'done'),
     ]
     results, history = [], []
+    query = 'NVIDIA stock'
     for observation, expected in cases:
+        if 'address_bar_text' in observation:
+            observation['address_bar_text'] = query
+        if 'page_title' in observation:
+            observation['page_title'] = query + ' - Google Search'
         started = time.monotonic()
         plan = infer(goal, history, observation)
         results.append(dict(expected=expected,plan=plan,tool_match=plan['tool']==expected,seconds=round(time.monotonic()-started,3)))
         history.append(dict(plan, result={'ok':True}))
+        if plan['tool'] == 'type_text':
+            query = plan['args']['text']
         print(json.dumps(results[-1]), flush=True)
     output = dict(kind='UNO Q quantized planner inference; synthetic observations, no desktop execution',
                   goal=goal,results=results,all_tools_match=all(r['tool_match'] for r in results))
