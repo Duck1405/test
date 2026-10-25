@@ -85,8 +85,30 @@ pub struct BrowserState {
     pub text: Option<String>,
     pub submitted: bool,
     pub before_submit: String,
+    pub search_requested: bool,
 }
 impl BrowserState {
+    pub fn for_goal(goal: &str) -> Self {
+        let goal = goal.to_lowercase();
+        Self {
+            search_requested: ["search", "serch", "stock", "price", "look up", "find"]
+                .iter()
+                .any(|word| goal.contains(word)),
+            ..Self::default()
+        }
+    }
+    pub fn search_result_verified(&self, title: &str) -> bool {
+        if !self.search_requested {
+            return !title.trim().is_empty() && !self.focused;
+        }
+        self.submitted
+            && !self.focused
+            && self.text.as_ref().is_some_and(|query| {
+                !query.trim().is_empty()
+                    && title.to_lowercase().contains(&query.to_lowercase())
+                    && title != self.before_submit.as_str()
+            })
+    }
     pub fn observation(&self) -> Value {
         let (available, foreground, title) = browser_window();
         if !available {
@@ -207,6 +229,20 @@ pub fn execute(plan: &Plan, allowed: impl Fn() -> bool) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn google_homepage_is_not_a_completed_search() {
+        let mut browser = BrowserState::for_goal("search for NVIDIA stock");
+        assert!(!browser.search_result_verified("Google - Google Chrome"));
+        browser.text = Some("Nvidia stock".into());
+        browser.submitted = true;
+        browser.before_submit = "Google - Google Chrome".into();
+        assert!(!browser.search_result_verified("Google - Google Chrome"));
+        assert!(!browser.search_result_verified("Intel stock - Google Search"));
+        assert!(browser.search_result_verified("NVIDIA stock - Google Search - Google Chrome"));
+        assert!(
+            BrowserState::for_goal("open Chrome").search_result_verified("Google - Google Chrome")
+        );
+    }
     #[test]
     fn rejects_arbitrary_commands_and_extra_arguments() {
         for (tool, args) in [

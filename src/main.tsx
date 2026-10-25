@@ -8,12 +8,17 @@ type Port = { name: string; label: string; usb: boolean };
 type DeviceState = {
   phase: 'disconnected' | 'connecting' | 'connected' | 'disconnecting'; port: string; error: string;
   capabilities: string[]; task_phase: 'idle' | 'sending' | 'active' | 'stopping' | 'stopped';
-  task_id: string; mode: string; message: string; frames: number;
+  task_id: string; mode: string; message: string; frames: number; planner_since: number; planner_step: number;
 };
 type LogEntry = { time: number; source: 'laptop' | 'uno'; message: string };
 type PointerTarget = { x: number; y: number; kind: 'move' | 'click' | 'tool'; label: string; mode: string };
 type Chat = { role: 'user' | 'bob'; text: string };
-const initial: DeviceState = { phase: 'disconnected', port: '', error: '', capabilities: [], task_phase: 'idle', task_id: '', mode: 'guide', message: '', frames: 0 };
+const initial: DeviceState = { phase: 'disconnected', port: '', error: '', capabilities: [], task_phase: 'idle', task_id: '', mode: 'guide', message: '', frames: 0, planner_since: 0, planner_step: 0 };
+function useElapsed(since: number) {
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => { const timer = setInterval(() => setNow(Date.now()), 500); return () => clearInterval(timer); }, []);
+  return since ? Math.max(0, Math.floor((now - since) / 1000)) : 0;
+}
 
 function DeviceIcon({ connected }: { connected: boolean }) {
   return <div className={`device-icon ${connected ? 'ready' : ''}`} aria-hidden="true">
@@ -54,18 +59,21 @@ function SharingOverlay() {
 function StopPopup() {
   const [error, setError] = useState('');
   const [mode, setMode] = useState('guide');
+  const [planning, setPlanning] = useState(0);
+  const seconds = useElapsed(planning);
   useEffect(() => {
     if (!isTauri()) return;
     let active = true;
-    const timer = setInterval(() => void invoke<DeviceState>('get_state').then(state => { if (active) setMode(state.mode); }).catch(() => {}), 300);
+    const timer = setInterval(() => void invoke<DeviceState>('get_state').then(state => { if (active) {setMode(state.mode); setPlanning(state.task_phase === 'active' ? state.planner_since : 0);} }).catch(() => {}), 300);
     return () => { active = false; clearInterval(timer); };
   }, []);
-  return <div className="stop-popup"><span className="live-dot" /><span>{error || (mode === 'do' ? 'Auto · screen control' : 'Guide · screen shared')}</span>
+  return <div className="stop-popup"><span className="live-dot" /><span>{error || (planning ? `Thinking on Q · ${seconds}s` : mode === 'do' ? 'Auto · next step' : 'Guide · your step')}</span>
     <button onClick={() => void invoke('stop_task').catch(e => setError(String(e)))}>Stop <kbd>Esc</kbd></button></div>;
 }
 
 function App() {
   const [device, setDevice] = useState<DeviceState>(initial);
+  const planningSeconds = useElapsed(device.planner_since);
   const [ports, setPorts] = useState<Port[]>([]);
   const [selected, setSelected] = useState('');
   const [uiError, setUiError] = useState('');
@@ -205,7 +213,7 @@ function App() {
   }
   const error = uiError || device.error;
   const status = busy ? (device.phase === 'connecting' ? `Checking ${device.port.startsWith('adb:') ? 'UNO Q USB' : device.port}…` : 'Disconnecting…')
-    : connected ? (device.task_phase === 'active' ? `Sharing primary screen · ${device.frames} frames received` : device.task_phase === 'sending' ? 'Waiting for UNO Q receipt…' : device.task_phase === 'stopping' ? 'Sharing off · finishing stop…' : 'UNO Q connected · screen sharing off')
+    : connected ? (device.task_phase === 'active' ? device.planner_since ? `Thinking on UNO Q · ${planningSeconds}s` : `Step ${device.planner_step || 1} · screen shared` : device.task_phase === 'sending' ? 'Waiting for UNO Q receipt…' : device.task_phase === 'stopping' ? 'Sharing off · finishing stop…' : 'UNO Q connected · screen sharing off')
       : error ? 'Let’s try again.' : ports.length ? 'Choose a device, or let Bob find it.' : 'Waiting for your USB device…';
 
   return <main className={`widget ${connected ? 'has-chat' : ''}`}>

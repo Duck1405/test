@@ -30,6 +30,8 @@ struct DeviceState {
     mode: String,
     message: String,
     frames: u64,
+    planner_since: u64,
+    planner_step: usize,
 }
 #[derive(Clone, Serialize)]
 struct LogEntry {
@@ -75,6 +77,8 @@ impl Session {
                 mode: "guide".into(),
                 message: String::new(),
                 frames: 0,
+                planner_since: 0,
+                planner_step: 0,
             })),
             logs: Arc::new(Mutex::new(VecDeque::new())),
             cancel: Arc::new(AtomicBool::new(false)),
@@ -109,6 +113,7 @@ impl Session {
                 *self.pointer.lock().unwrap() = None;
                 input::set_auto(false);
                 s.task_phase = "stopping".into();
+                s.planner_since = 0;
                 s.message = reason.into();
                 true
             } else {
@@ -329,11 +334,21 @@ fn process_planner(
         }
         if plan.tool == "done" {
             let (_, chrome, title) = tools::browser_window();
-            if !chrome || title.is_empty() || browser.focused {
-                return Err(
-                    "The planner reported completion, but Chrome has no verified result window."
-                        .into(),
-                );
+            if !chrome || !browser.search_result_verified(&title) {
+                exchange(
+                    port,
+                    session,
+                    json!({"type":"planner_result","task_id":task,"step_id":step.step.id,"result":{"ok":false,"error":"Search is not complete. Focus the address bar, type the search query, press Enter, and observe the result title."}}),
+                    "planner_recorded",
+                    3,
+                    true,
+                )?;
+                session.snapshot.lock().unwrap().message =
+                    "Search is not complete yet. Planning the next step…".into();
+                *session.pointer.lock().unwrap() = None;
+                *pending = None;
+                *poll = Instant::now();
+                return Ok(());
             }
             session.stop(&format!("{} · Chrome: {}", plan.instruction(), title));
             *pending = None;
@@ -400,6 +415,7 @@ fn process_planner(
         );
         *pending = None;
         *session.pointer.lock().unwrap() = None;
+        session.snapshot.lock().unwrap().planner_since = 0;
         *poll = Instant::now();
         // Focus failure must never turn into typing in another app.
         if let Err(error) = result {
@@ -423,6 +439,16 @@ fn process_planner(
         return Ok(());
     };
     match reply["state"].as_str() {
+        Some("thinking") => {
+            let mut state = session.snapshot.lock().unwrap();
+            if state.planner_since == 0 {
+                state.planner_since = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis() as u64;
+                state.message="Thinking locally on UNO Q. The next step can take 10–25 seconds; Auto stops if you use the mouse or keyboard.".into();
+            }
+        }
         Some("error") => {
             return Err(reply["message"]
                 .as_str()
@@ -445,6 +471,11 @@ fn process_planner(
                 return Err("Duplicate or invalid planner step.".into());
             }
             let instruction = step.plan.instruction();
+            {
+                let mut state = session.snapshot.lock().unwrap();
+                state.planner_since = 0;
+                state.planner_step = seen.len();
+            }
             session.snapshot.lock().unwrap().message = if mode == "guide"
                 && !matches!(step.plan.tool.as_str(), "done" | "ask" | "observe")
             {
@@ -754,7 +785,7 @@ fn run_device(
             }) => {
                 pending_action = None;
                 pending_plan = None;
-                browser = tools::BrowserState::default();
+                browser = tools::BrowserState::for_goal(&text);
                 seen_plans.clear();
                 seen_actions.clear();
                 if cancelled(session, true) {
@@ -901,6 +932,8 @@ async fn connect_device(
         state.task_phase = "idle".into();
         state.message.clear();
         state.frames = 0;
+        state.planner_since = 0;
+        state.planner_step = 0;
         *session.sender.lock().unwrap() = Some(sender);
     }
     let owned = (*session).clone();
@@ -984,6 +1017,8 @@ fn start_task(
         state.mode = mode.clone();
         state.message = "Sending your task to UNO Q…".into();
         state.frames = 0;
+        state.planner_since = 0;
+        state.planner_step = 0;
         *session.last_frame.lock().unwrap() = None;
         *session.pointer.lock().unwrap() = None;
         session.guide_confirmed.store(false, Ordering::SeqCst);
