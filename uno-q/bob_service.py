@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Bob's UNO Q receiver. Standard library only; no AI and no desktop actions."""
+"""USB receiver and asynchronous local planner. Desktop input stays on Windows."""
 import argparse
 import base64
 import hashlib

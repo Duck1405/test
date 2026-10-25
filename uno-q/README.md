@@ -47,7 +47,11 @@ The existing COM-port connection remains for ESP32 testing. Its old handshake sk
 - Drops task and frame references on Stop, a closed connection, an idle host heartbeat, or an eight-second session lease expiry.
 - Sends metadata logs to Bob's Debug view. Task text and image payloads are not logged.
 
-It does **not** run an AI model yet. The action layer is ready: `Receiver.queue_action(kind, x, y, label)` accepts one move/click target at a time, with normalized primary-screen coordinates. The Windows widget's explicit Debug test uses this entry point. There are no default or automatic demo targets.
+The optional `bob-planner` service runs the trained Qwen3-0.6B Q4_K_M tool planner locally. The pointer layer remains available: `Receiver.queue_action(kind, x, y, label)` accepts one move/click target at a time, with normalized primary-screen coordinates. The Windows widget's explicit Debug test uses this entry point and disables AI for that manual test session.
+
+To install the trained planner, stage `bob-q4_k_m.gguf` and `bob-model-manifest.json` in `/home/arduino/bob-ai/`, with the pinned b11869 ARM runtime in `runtime/llama-b11869/`. Run `sudo python3 /home/arduino/bob-uno-q/install_service.py --with-ai`. The installer checks the checksum and enables both services at boot. Check `systemctl is-active bob-butler bob-planner`.
+
+The `planner_v1` capability adds `planner_poll`, `planner_permit` (Auto only), and `planner_result`. Polling starts at most one background inference and returns a stable UUID for one validated tool. Stop and lease expiry discard late responses. A task can use at most 24 model steps. Planner logs contain tool names and timing without typed text.
 
 Guide sessions display the target and wait for the user. Auto sessions request a fresh permit before moving/clicking the real Windows cursor. The Q never directly injects laptop input; the Windows executor enforces mode, task/frame IDs, freshness, Stop and physical takeover. Stop clears queued/in-flight actions as well as screen buffers. Results are acknowledged idempotently; completed action IDs are bounded to 512 per task.
 
