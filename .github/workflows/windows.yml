@@ -42,7 +42,15 @@ jobs:
       - name: Install frontend dependencies
         run: pnpm install --frozen-lockfile
       - name: Check protocol
-        run: cargo test --manifest-path src-tauri/Cargo.toml
+        shell: pwsh
+        run: |
+          $diagnostics = & cargo test --manifest-path src-tauri/Cargo.toml 2>&1
+          $result = $LASTEXITCODE
+          $diagnostics | ForEach-Object { Write-Output $_ }
+          if ($result -ne 0) {
+            $diagnostics | Where-Object { "$_" -match '^error|^\s*--> |^\s*[0-9]+\s*\|' } | Select-Object -Last 35 | ForEach-Object { Write-Output "::error::$_" }
+            exit $result
+          }
       - name: Check UNO Q receiver
         run: python -m unittest discover -s uno-q -p "test_*.py" -v
       - name: Check AI output and tool contracts

@@ -178,7 +178,7 @@ function App() {
     if (sessionBusy) return;
     setUiError('');
     try {
-      const id = await invoke<string>('start_task', { text: `Manual ${testKind} pointer test. No AI model.`, mode });
+      const id = await invoke<string>('start_task', { text: `Manual ${testKind} pointer test. No AI model.`, mode, planner: false });
       demoTarget.current = { id, x: targetX / 100, y: targetY / 100, kind: testKind };
       await sync();
     } catch (error) { demoTarget.current = null; setUiError(String(error)); }

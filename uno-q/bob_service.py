@@ -77,7 +77,7 @@ class Receiver:
                 return [reply('task_received', task_id=task_id, mode=mode, ai_ready=self.ai_ready)]
             if self.task:
                 return [reply('error', message='Stop the current task before starting another.')]
-            self.task = dict(id=task_id, mode=mode, text=text)
+            self.task = dict(id=task_id, mode=mode, text=text, planner=packet.get('planner', True) is True)
             return [log(f'Task received ({mode} mode). Local planner ready: {self.ai_ready}.'),
                     reply('task_received', task_id=task_id, mode=mode, ai_ready=self.ai_ready)]
         if kind == 'stop_task':
@@ -89,7 +89,7 @@ class Receiver:
         if not self.task or packet.get('task_id') != self.task['id']:
             return [reply('error', message='No matching active task.')]
         if kind == 'planner_poll':
-            if not self.ai_ready:
+            if not self.ai_ready or not self.task['planner']:
                 return [reply('planner_step', task_id=self.task['id'], state='unavailable')]
             if self.plan_count >= 24:
                 return [reply('planner_step', task_id=self.task['id'], state='error', message='Planner step limit reached.')]

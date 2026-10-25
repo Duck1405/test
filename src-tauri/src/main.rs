@@ -47,6 +47,7 @@ enum Command {
         id: String,
         mode: String,
         text: String,
+        planner: bool,
     },
 }
 #[derive(Clone)]
@@ -742,7 +743,12 @@ fn run_device(
             session.snapshot.lock().unwrap().task_phase = "stopped".into();
         }
         match receiver.try_recv() {
-            Ok(Command::Task { id, mode, text }) => {
+            Ok(Command::Task {
+                id,
+                mode,
+                text,
+                planner,
+            }) => {
                 pending_action = None;
                 pending_plan = None;
                 browser = tools::BrowserState::default();
@@ -755,7 +761,7 @@ fn run_device(
                 match exchange(
                     port.as_mut(),
                     session,
-                    json!({"type":"task","task_id":id,"mode":mode,"text":text}),
+                    json!({"type":"task","task_id":id,"mode":mode,"text":text,"planner":planner}),
                     "task_received",
                     5,
                     true,
@@ -940,6 +946,7 @@ fn start_task(
     window: tauri::WebviewWindow,
     text: String,
     mode: String,
+    planner: Option<bool>,
     session: tauri::State<Session>,
 ) -> Result<String, String> {
     main_only(&window)?;
@@ -989,6 +996,7 @@ fn start_task(
                 id: id.clone(),
                 mode,
                 text,
+                planner: planner.unwrap_or(true),
             })
             .map_err(|_| "USB connection is closed.")
         });
