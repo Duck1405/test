@@ -236,7 +236,7 @@ fn exchange(
     if cancelled(session, task) {
         Ok(None)
     } else {
-        Err("Device response timed out. Check the USB connection and UNO Q service.".into())
+        Err(format!("Device response timed out waiting for {reply}. Check the USB connection and UNO Q service."))
     }
 }
 
@@ -1073,7 +1073,7 @@ fn main() {
             window.show()?;
             let handle = app.handle().clone();
             let session = app.state::<Session>().inner().clone();
-            session.log("laptop", "Bob 0.4 started. No screen is captured until a task is acknowledged and sharing indicators are visible.");
+            session.log("laptop", format!("Bob {} started. No screen is captured until a task is acknowledged and sharing indicators are visible.", env!("CARGO_PKG_VERSION")));
             std::thread::spawn(move || {
                 let mut shown = false;
                 loop {

@@ -25,6 +25,18 @@ class ReceiverTests(unittest.TestCase):
         self.assertIn('screen_v1', response['capabilities'])
         self.assertFalse(response['ai_ready'])
 
+    def test_heartbeat_echoes_task_id_required_by_windows_exchange(self):
+        self.task()
+        for mode in ('guide', 'do'):
+            self.receiver.task['mode'] = mode
+            response = self.send('ping', task_id='task-1')[-1]
+            self.assertEqual(response['type'], 'pong')
+            self.assertEqual(response['task_id'], 'task-1')
+            self.assertIsNotNone(self.receiver.task)
+        response = self.send('ping', task_id=None)[-1]
+        self.assertIsNone(response['task_id'])
+        self.assertIsNone(self.receiver.task)
+
     def test_task_receipt_is_idempotent_and_validates_mode(self):
         self.assertEqual(self.task()[-1]['type'], 'task_received')
         self.assertEqual(self.task()[-1]['type'], 'task_received')

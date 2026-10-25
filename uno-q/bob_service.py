@@ -65,8 +65,8 @@ class Receiver:
         if kind == 'ping':
             if self.task and packet.get('task_id') != self.task['id']:
                 self.stop()
-                return [log('Host session is inactive. Screen buffers cleared.'), reply('pong')]
-            return [reply('pong')]
+                return [log('Host session is inactive. Screen buffers cleared.'), reply('pong', task_id=packet.get('task_id'))]
+            return [reply('pong', task_id=packet.get('task_id'))]
         if kind == 'task':
             task_id, mode, text = packet.get('task_id'), packet.get('mode'), packet.get('text')
             if (not isinstance(task_id, str) or not 1 <= len(task_id) <= 100
