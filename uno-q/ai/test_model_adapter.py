@@ -1,5 +1,8 @@
 import unittest
-from model_adapter import ModelOutputError, parse_point, parse_search
+try:
+    from .model_adapter import ModelOutputError, parse_point, parse_search
+except ImportError:
+    from model_adapter import ModelOutputError, parse_point, parse_search
 
 
 class ModelOutputTests(unittest.TestCase):

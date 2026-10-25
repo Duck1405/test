@@ -9,6 +9,9 @@ import math
 import uuid
 import socket
 import time
+from pathlib import Path
+from ai.planner import Planner
+from ai.tool_plan import parse_tool
 
 MAX_LINE = 8192
 MAX_FRAME = 32768
@@ -25,11 +28,18 @@ class Receiver:
         self.queued_action = None
         self.inflight_action = None
         self.completed_actions = set()
+        self.planner = Planner()
+        self.plan_step = None
+        self.plan_count = 0
+        self.ai_ready = Path('/opt/bob-the-butler/model/bob-q4_k_m.gguf').is_file()
 
     def stop(self):
         self.task = self.frame = self.last_frame = None
         self.last_frame_id = self.queued_action = self.inflight_action = None
         self.completed_actions.clear()
+        self.planner.reset()
+        self.plan_step = None
+        self.plan_count = 0
 
     def expire(self):
         if self.task and time.monotonic() - self.last_seen > LEASE_SECONDS:
@@ -50,8 +60,8 @@ class Receiver:
         self.expire()
         self.last_seen = time.monotonic()
         if kind == 'hello':
-            return [reply('hello_ack', board='Arduino UNO Q', service_version='0.4.0',
-                          capabilities=['tasks_v1', 'screen_v1', 'actions_v1'], ai_ready=False, process_id=os.getpid())]
+            return [reply('hello_ack', board='Arduino UNO Q', service_version='0.5.0',
+                          capabilities=['tasks_v1', 'screen_v1', 'actions_v1', 'planner_v1'], ai_ready=self.ai_ready, process_id=os.getpid())]
         if kind == 'ping':
             if self.task and packet.get('task_id') != self.task['id']:
                 self.stop()
@@ -64,12 +74,12 @@ class Receiver:
                     or not text.strip() or len(text.encode('utf-8')) > 4000):
                 return [reply('error', message='Invalid task or mode.')]
             if self.task and self.task['id'] == task_id:
-                return [reply('task_received', task_id=task_id, mode=mode, ai_ready=False)]
+                return [reply('task_received', task_id=task_id, mode=mode, ai_ready=self.ai_ready)]
             if self.task:
                 return [reply('error', message='Stop the current task before starting another.')]
             self.task = dict(id=task_id, mode=mode, text=text)
-            return [log(f'Task received ({mode} mode). AI is not installed.'),
-                    reply('task_received', task_id=task_id, mode=mode, ai_ready=False)]
+            return [log(f'Task received ({mode} mode). Local planner ready: {self.ai_ready}.'),
+                    reply('task_received', task_id=task_id, mode=mode, ai_ready=self.ai_ready)]
         if kind == 'stop_task':
             task_id = packet.get('task_id')
             if self.task and task_id != self.task['id']:
@@ -78,6 +88,39 @@ class Receiver:
             return [log('Session stopped. Screen buffers cleared.'), reply('task_stopped', task_id=task_id)]
         if not self.task or packet.get('task_id') != self.task['id']:
             return [reply('error', message='No matching active task.')]
+        if kind == 'planner_poll':
+            if not self.ai_ready:
+                return [reply('planner_step', task_id=self.task['id'], state='unavailable')]
+            if self.plan_count >= 24:
+                return [reply('planner_step', task_id=self.task['id'], state='error', message='Planner step limit reached.')]
+            if self.plan_step is None:
+                result = self.planner.take()
+                if result:
+                    if 'error' in result:
+                        return [reply('planner_step', task_id=self.task['id'], state='error', message=result['error'])]
+                    plan = parse_tool(result['plan'])
+                    self.plan_step = dict(id=str(uuid.uuid4()), plan=plan, seconds=result['seconds'])
+                    self.plan_count += 1
+                else:
+                    observation = packet.get('observation')
+                    if not isinstance(observation, dict) or len(json.dumps(observation)) > 2000:
+                        return [reply('error', message='Invalid planner observation.')]
+                    self.planner.start(self.task['text'], observation)
+            return [reply('planner_step', task_id=self.task['id'], state='ready' if self.plan_step else 'thinking', step=self.plan_step)]
+        if kind == 'planner_permit':
+            if not self.plan_step or packet.get('step_id') != self.plan_step['id'] or self.task['mode'] != 'do':
+                return [reply('error', message='Planner step is no longer authorized.')]
+            return [reply('planner_permitted', task_id=self.task['id'], step_id=self.plan_step['id'])]
+        if kind == 'planner_result':
+            if not self.plan_step or packet.get('step_id') != self.plan_step['id']:
+                return [reply('error', message='Stale planner result.')]
+            result = packet.get('result')
+            if (not isinstance(result, dict) or not isinstance(result.get('ok'), bool)
+                    or len(json.dumps(result)) > 2000):
+                return [reply('error', message='Invalid planner result.')]
+            self.planner.record(self.plan_step['plan'], result)
+            self.plan_step = None
+            return [reply('planner_recorded', task_id=self.task['id'])]
         if kind == 'test_action':
             try:
                 action = self.queue_action(packet.get('kind'), packet.get('x'), packet.get('y'), 'Click here' if packet.get('kind') == 'click' else 'Move here')

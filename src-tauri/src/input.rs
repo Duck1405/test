@@ -78,6 +78,76 @@ mod platform {
     pub fn physical_seen() -> bool {
         PHYSICAL.load(Ordering::SeqCst)
     }
+    pub fn keyboard(
+        tool: &str,
+        args: &serde_json::Value,
+        allowed: impl Fn() -> bool,
+    ) -> Result<(), String> {
+        let send = |vk: u16, scan: u16, flags: u32| -> Result<(), String> {
+            unsafe {
+                let mut input: INPUT = std::mem::zeroed();
+                input.r#type = INPUT_KEYBOARD;
+                input.Anonymous.ki = KEYBDINPUT {
+                    wVk: vk,
+                    wScan: scan,
+                    dwFlags: flags,
+                    time: 0,
+                    dwExtraInfo: 0x424f42,
+                };
+                if SendInput(1, &input, std::mem::size_of::<INPUT>() as i32) == 1 {
+                    Ok(())
+                } else {
+                    Err("Windows blocked keyboard input.".into())
+                }
+            }
+        };
+        let tap = |vk: u16, scan: u16, flags: u32| -> Result<(), String> {
+            if !allowed() || physical_seen() {
+                return Err("Keyboard step cancelled.".into());
+            }
+            send(vk, scan, flags)?;
+            // Always release a key accepted by Windows, including after cancellation.
+            send(vk, scan, flags | KEYEVENTF_KEYUP)
+        };
+        match tool {
+            "type_text" => {
+                for ch in args["text"].as_str().ok_or("Missing text")?.encode_utf16() {
+                    tap(0, ch, KEYEVENTF_UNICODE)?;
+                }
+                Ok(())
+            }
+            "press_key" => {
+                let vk = match args["key"].as_str().unwrap_or("") {
+                    "enter" => VK_RETURN,
+                    "tab" => VK_TAB,
+                    "esc" => VK_ESCAPE,
+                    "backspace" => VK_BACK,
+                    "up" => VK_UP,
+                    "down" => VK_DOWN,
+                    "left" => VK_LEFT,
+                    "right" => VK_RIGHT,
+                    _ => return Err("Unsupported key".into()),
+                };
+                tap(vk, 0, 0)
+            }
+            "hotkey" => {
+                let vk = match args["keys"].as_str().unwrap_or("") {
+                    "ctrl+l" => 0x4c,
+                    "ctrl+t" => 0x54,
+                    "ctrl+a" => 0x41,
+                    _ => return Err("Unsupported shortcut".into()),
+                };
+                if !allowed() || physical_seen() {
+                    return Err("Shortcut cancelled.".into());
+                }
+                send(VK_CONTROL, 0, 0)?;
+                let result = tap(vk, 0, 0);
+                let release = send(VK_CONTROL, 0, KEYEVENTF_KEYUP);
+                result.and(release)
+            }
+            _ => Err("Unsupported keyboard tool".into()),
+        }
+    }
     pub fn clicks() -> u64 {
         CLICKS.load(Ordering::SeqCst)
     }
@@ -190,4 +260,8 @@ pub fn guided_done(_: f64, _: f64, _: bool, _: u64) -> bool {
 #[cfg(not(windows))]
 pub fn execute(_: f64, _: f64, _: bool, _: impl Fn() -> bool) -> Result<(), String> {
     Err("Auto cursor control currently requires Windows.".into())
+}
+#[cfg(not(windows))]
+pub fn keyboard(_: &str, _: &serde_json::Value, _: impl Fn() -> bool) -> Result<(), String> {
+    Err("Keyboard tools currently require Windows.".into())
 }

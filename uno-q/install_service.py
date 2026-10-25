@@ -9,6 +9,8 @@ import subprocess
 import sys
 import tempfile
 import time
+import shutil
+import hashlib
 
 SERVICE = 'bob-butler.service'
 APP_DIR = Path('/opt/bob-the-butler')
@@ -55,6 +57,7 @@ def ready():
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--dry-run', action='store_true', help='Show the plan without changing files or starting services.')
+    parser.add_argument('--with-ai', action='store_true', help='Install the staged quantized model and pinned runtime from /home/arduino/bob-ai.')
     args = parser.parse_args()
     source = Path(__file__).resolve().parent
     script = (source / 'bob_service.py').read_bytes()
@@ -75,8 +78,30 @@ def main():
     APP_DIR.mkdir(mode=0o755, parents=True, exist_ok=True)
     os.chmod(APP_DIR, 0o755)
     atomic_write(APP_DIR / 'bob_service.py', script)
+    (APP_DIR / 'ai').mkdir(exist_ok=True)
+    for name in ('__init__.py', 'planner.py', 'tool_plan.py'):
+        atomic_write(APP_DIR / 'ai' / name, (source / 'ai' / name).read_bytes())
+    if args.with_ai:
+        staging = Path('/home/arduino/bob-ai')
+        model = staging / 'bob-q4_k_m.gguf'
+        manifest = json.loads((staging / 'bob-model-manifest.json').read_text())
+        with model.open('rb') as handle:
+            if handle.read(4) != b'GGUF':
+                raise RuntimeError('Model is not GGUF.')
+            handle.seek(0)
+            digest = hashlib.file_digest(handle, 'sha256').hexdigest()
+        if digest != manifest['sha256']:
+            raise RuntimeError('Model checksum does not match the conversion manifest.')
+        (APP_DIR / 'model').mkdir(exist_ok=True)
+        shutil.copy2(model, APP_DIR / 'model' / model.name)
+        os.chmod(APP_DIR / 'model' / model.name, 0o644)
+        atomic_write(APP_DIR / 'model' / 'manifest.json', (staging / 'bob-model-manifest.json').read_bytes())
+        shutil.copytree(staging / 'runtime' / 'llama-b11869', APP_DIR / 'runtime', symlinks=True, dirs_exist_ok=True)
+        atomic_write(Path('/etc/systemd/system/bob-planner.service'), (source / 'bob-planner.service').read_bytes())
     atomic_write(UNIT_PATH, unit)
     subprocess.run(['systemctl', 'daemon-reload'], check=True)
+    if args.with_ai:
+        subprocess.run(['systemctl', 'enable', '--now', 'bob-planner.service'], check=True)
     subprocess.run(['systemctl', 'enable', SERVICE], check=True)
     subprocess.run(['systemctl', 'restart', SERVICE], check=True)
     deadline = time.monotonic() + 8

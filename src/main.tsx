@@ -11,7 +11,7 @@ type DeviceState = {
   task_id: string; mode: string; message: string; frames: number;
 };
 type LogEntry = { time: number; source: 'laptop' | 'uno'; message: string };
-type PointerTarget = { x: number; y: number; kind: 'move' | 'click'; label: string; mode: string };
+type PointerTarget = { x: number; y: number; kind: 'move' | 'click' | 'tool'; label: string; mode: string };
 type Chat = { role: 'user' | 'bob'; text: string };
 const initial: DeviceState = { phase: 'disconnected', port: '', error: '', capabilities: [], task_phase: 'idle', task_id: '', mode: 'guide', message: '', frames: 0 };
 
@@ -43,7 +43,8 @@ function SharingOverlay() {
   }, []);
   return <div className="screen-border" aria-label="Primary screen is being shared with UNO Q">
     <span className="corner tl" /><span className="corner tr" /><span className="corner bl" /><span className="corner br" />
-    {target && <div className={`blue-pointer ${target.kind} ${target.x > .7 ? 'edge-right' : ''} ${target.y > .8 ? 'edge-bottom' : ''}`} style={{ left: `${target.x * 100}%`, top: `${target.y * 100}%` }}>
+    {target?.kind === 'tool' && <div className="tool-instruction">{target.mode === 'guide' ? 'Your next step: ' : 'Bob: '}{target.label}</div>}
+    {target && target.kind !== 'tool' && <div className={`blue-pointer ${target.kind} ${target.x > .7 ? 'edge-right' : ''} ${target.y > .8 ? 'edge-bottom' : ''}`} style={{ left: `${target.x * 100}%`, top: `${target.y * 100}%` }}>
       {target.kind === 'click' && <><span className="click-ring" /><span className="click-wave" /></>}
       <svg viewBox="0 0 30 38" aria-hidden="true"><path d="M2 2 25 22 15 23 11 34 6 32 10 22 2 24Z" fill="#2185ef" stroke="white" strokeWidth="2.5" strokeLinejoin="round" /></svg>
       <span className="pointer-label">{target.mode === 'guide' ? target.label : target.kind === 'click' ? 'Bob is clicking here' : 'Bob is moving here'}</span>
@@ -243,16 +244,17 @@ function App() {
         {sessionBusy ? <button onClick={() => void stopTask()}>Stop</button> : <button onClick={() => void disconnect()}>Disconnect</button>}
       </div>
       <div className="chat-messages" role="log" aria-label="Conversation with Bob">
-        {!chat.length && <div className="bubble bob">{supported ? 'Ready when you are. Send a task to start sharing your primary screen with UNO Q. AI is coming next.' : 'Connected. Upload the Bob receiver service to UNO Q to enable tasks, screen sharing and pointers.'}</div>}
+        {!chat.length && <div className="bubble bob">{supported ? 'Ready when you are. Ask Bob to search in Chrome. Planning runs locally on your UNO Q.' : 'Connected. Upload the Bob receiver service to UNO Q to enable tasks, screen sharing and pointers.'}</div>}
         {chat.map((message, i) => <div className={`bubble ${message.role}`} key={i}>{message.text}</div>)}
         <div ref={chatBottom} />
       </div>
+      {device.task_phase === 'active' && device.mode === 'guide' && <button className="guide-done" onClick={() => void invoke('complete_guidance').catch(e => setUiError(String(e)))}>Step done · then return to Chrome</button>}
       <form className="composer" onSubmit={event => void sendTask(event)}>
         <textarea aria-label="Task for UNO Q" placeholder="What can Bob help with?" value={task} maxLength={2000} disabled={sessionBusy || !supported} onChange={e => setTask(e.target.value)} />
         <div className="composer-controls"><select aria-label="Assistant mode" value={mode} disabled={sessionBusy} onChange={e => setMode(e.target.value)}><option value="do">Do it for me</option><option value="guide">Guide me</option></select>
           <button className="send" type="submit" disabled={!task.trim() || sessionBusy || !supported} title="Send task and share primary screen" aria-label="Send task and share primary screen">↑</button></div>
       </form>
-      <p className="consent-note">{mode === 'do' ? 'Auto can move/click. Any physical input stops it.' : 'Guide shows blue targets. You move and click.'} <kbd>Esc</kbd> stops.</p>
+      <p className="consent-note">{mode === 'do' ? 'Auto uses Chrome and keyboard. Physical input stops it.' : 'Guide shows steps. You use the keyboard and mouse.'} <kbd>Esc</kbd> stops.</p>
     </> : <>
       <section className="hero"><DeviceIcon connected={false} /><div><h1>Hey, let’s connect.</h1><p>Plug in your UNO Q to get started.</p></div></section>
       <div className="status" role="status" aria-live="polite"><span className={busy ? 'pulse' : ''} />{status}</div>

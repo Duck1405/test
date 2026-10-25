@@ -2,6 +2,7 @@
 mod actions;
 mod input;
 mod screen;
+mod tools;
 mod transport;
 
 use base64::{engine::general_purpose::STANDARD, Engine};
@@ -280,6 +281,198 @@ struct PendingAction {
     click_seq: u64,
 }
 
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PlannerStep {
+    id: String,
+    plan: tools::Plan,
+    seconds: f64,
+}
+struct PendingPlan {
+    step: PlannerStep,
+    started: Instant,
+}
+fn process_planner(
+    port: &mut dyn transport::Transport,
+    session: &Session,
+    pending: &mut Option<PendingPlan>,
+    browser: &mut tools::BrowserState,
+    poll: &mut Instant,
+    seen: &mut HashSet<String>,
+) -> Result<(), String> {
+    if !session.active() {
+        *pending = None;
+        return Ok(());
+    }
+    let (task, mode, enabled) = {
+        let s = session.snapshot.lock().unwrap();
+        (
+            s.task_id.clone(),
+            s.mode.clone(),
+            s.capabilities.iter().any(|v| v == "planner_v1"),
+        )
+    };
+    if !enabled {
+        return Ok(());
+    }
+    if let Some(step) = pending.as_ref() {
+        let plan = &step.step.plan;
+        let passive = matches!(plan.tool.as_str(), "observe" | "done" | "ask");
+        if step.started.elapsed() > Duration::from_secs(180) {
+            return Err("Planner step timed out.".into());
+        }
+        if plan.tool == "ask" {
+            session.stop(&plan.instruction());
+            *pending = None;
+            return Ok(());
+        }
+        if plan.tool == "done" {
+            let (_, chrome, title) = tools::browser_window();
+            if !chrome || title.is_empty() || browser.focused {
+                return Err(
+                    "The planner reported completion, but Chrome has no verified result window."
+                        .into(),
+                );
+            }
+            session.stop(&format!("{} · Chrome: {}", plan.instruction(), title));
+            *pending = None;
+            return Ok(());
+        }
+        if step.started.elapsed() < Duration::from_millis(if passive { 1500 } else { 800 }) {
+            return Ok(());
+        }
+        if mode == "guide" && !passive {
+            // Clicking Done focuses Bob. Wait until the user returns to Chrome.
+            if !session.guide_confirmed.load(Ordering::SeqCst) || !tools::browser_window().1 {
+                return Ok(());
+            }
+            session.guide_confirmed.store(false, Ordering::SeqCst);
+        }
+        let result = if passive || mode == "guide" {
+            Ok(())
+        } else {
+            if exchange(
+                port,
+                session,
+                json!({"type":"planner_permit","task_id":task,"step_id":step.step.id}),
+                "planner_permitted",
+                2,
+                true,
+            )?
+            .is_none()
+            {
+                return Ok(());
+            }
+            tools::execute(plan, || {
+                session.active()
+                    && session.indicators_ready.load(Ordering::SeqCst)
+                    && !cancelled(session, true)
+            })
+        };
+        if cancelled(session, true) {
+            return Ok(());
+        }
+        browser.record(plan, result.is_ok());
+        let outcome = match &result {
+            Ok(()) => json!({"ok":true}),
+            Err(error) => json!({"ok":false,"error":error}),
+        };
+        exchange(
+            port,
+            session,
+            json!({"type":"planner_result","task_id":task,"step_id":step.step.id,"result":outcome}),
+            "planner_recorded",
+            3,
+            true,
+        )?;
+        session.log(
+            "laptop",
+            format!(
+                "Planner tool {}: {}.",
+                plan.tool,
+                if result.is_ok() {
+                    "acknowledged"
+                } else {
+                    "failed"
+                }
+            ),
+        );
+        *pending = None;
+        *session.pointer.lock().unwrap() = None;
+        *poll = Instant::now();
+        // Focus failure must never turn into typing in another app.
+        if let Err(error) = result {
+            return Err(error);
+        }
+        return Ok(());
+    }
+    if poll.elapsed() < Duration::from_millis(1500) {
+        return Ok(());
+    }
+    *poll = Instant::now();
+    let Some(reply) = exchange(
+        port,
+        session,
+        json!({"type":"planner_poll","task_id":task,"observation":browser.observation()}),
+        "planner_step",
+        2,
+        true,
+    )?
+    else {
+        return Ok(());
+    };
+    match reply["state"].as_str() {
+        Some("error") => {
+            return Err(reply["message"]
+                .as_str()
+                .unwrap_or("Planner failed.")
+                .into())
+        }
+        Some("ready") => {
+            let step: PlannerStep = serde_json::from_value(reply["step"].clone())
+                .map_err(|_| "Invalid planner step")?;
+            step.plan.validate()?;
+            if step.id.is_empty()
+                || step.id.len() > 100
+                || !step.seconds.is_finite()
+                || seen.len() >= 24
+                || !seen.insert(step.id.clone())
+            {
+                return Err("Duplicate or invalid planner step.".into());
+            }
+            let instruction = step.plan.instruction();
+            session.snapshot.lock().unwrap().message = if mode == "guide"
+                && !matches!(step.plan.tool.as_str(), "done" | "ask" | "observe")
+            {
+                format!(
+                    "{}. Then click Step done and return to Chrome.",
+                    instruction
+                )
+            } else {
+                instruction.clone()
+            };
+            session.log(
+                "uno",
+                format!("Local planner: {} ({:.2}s).", step.plan.tool, step.seconds),
+            );
+            *session.pointer.lock().unwrap() = Some(actions::Pointer {
+                x: 0.5,
+                y: 0.08,
+                kind: "tool".into(),
+                label: instruction,
+                mode,
+            });
+            session.guide_confirmed.store(false, Ordering::SeqCst);
+            *pending = Some(PendingPlan {
+                step,
+                started: Instant::now(),
+            });
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
 fn process_actions(
     port: &mut dyn transport::Transport,
     session: &Session,
@@ -518,6 +711,10 @@ fn run_device(
     );
     let mut action_poll = Instant::now();
     let mut pending_action: Option<PendingAction> = None;
+    let mut pending_plan: Option<PendingPlan> = None;
+    let mut browser = tools::BrowserState::default();
+    let mut planner_poll = Instant::now();
+    let mut seen_plans = HashSet::new();
     let mut seen_actions = HashSet::new();
     let mut active_id: Option<String> = None;
     let mut heartbeat = Instant::now();
@@ -526,6 +723,7 @@ fn run_device(
         let stopping = session.snapshot.lock().unwrap().task_phase == "stopping";
         if stopping {
             pending_action = None;
+            pending_plan = None;
             if let Some(id) = active_id.take() {
                 // Stop locally first; notify the board if the cable is still available.
                 let _ = exchange(
@@ -546,6 +744,9 @@ fn run_device(
         match receiver.try_recv() {
             Ok(Command::Task { id, mode, text }) => {
                 pending_action = None;
+                pending_plan = None;
+                browser = tools::BrowserState::default();
+                seen_plans.clear();
                 seen_actions.clear();
                 if cancelled(session, true) {
                     continue;
@@ -563,7 +764,7 @@ fn run_device(
                         let mut state = session.snapshot.lock().unwrap();
                         if !cancelled(session, true) {
                             state.task_phase = "active".into();
-                            state.message="Received by UNO Q. Starting primary-screen sharing. AI is not installed yet.".into();
+                            state.message="Received by UNO Q. Starting the local planner and primary-screen sharing.".into();
                         }
                         drop(state);
                         session.log(
@@ -599,15 +800,30 @@ fn run_device(
             _ => {}
         }
         if session.active() && session.indicators_ready.load(Ordering::SeqCst) {
-            if let Err(error) = process_actions(
-                port.as_mut(),
-                session,
-                &mut pending_action,
-                &mut seen_actions,
-                &mut action_poll,
-            ) {
-                session.log("laptop", &error);
-                session.stop(&error);
+            if pending_action.is_none() {
+                if let Err(error) = process_planner(
+                    port.as_mut(),
+                    session,
+                    &mut pending_plan,
+                    &mut browser,
+                    &mut planner_poll,
+                    &mut seen_plans,
+                ) {
+                    session.log("laptop", &error);
+                    session.stop(&error);
+                }
+            }
+            if pending_plan.is_none() {
+                if let Err(error) = process_actions(
+                    port.as_mut(),
+                    session,
+                    &mut pending_action,
+                    &mut seen_actions,
+                    &mut action_poll,
+                ) {
+                    session.log("laptop", &error);
+                    session.stop(&error);
+                }
             }
         }
         if session.active()

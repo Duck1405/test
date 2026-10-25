@@ -1,5 +1,8 @@
 import unittest
-from tool_plan import parse_tool, ai_desktop_args
+try:
+    from .tool_plan import parse_tool, ai_desktop_args
+except ImportError:
+    from tool_plan import parse_tool, ai_desktop_args
 
 class PlannerContractTests(unittest.TestCase):
     def test_existing_executor_commands(self):
