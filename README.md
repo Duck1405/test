@@ -6,9 +6,9 @@ A compact Windows desktop widget built with **React, TypeScript and Tauri 2**, w
 
 Download `DeviceCompanion.exe` from the repository using GitHub's **Download raw file** button, then open it. The filename is retained for compatibility; the app is named Bob the Butler. Windows needs Microsoft Edge WebView2, normally present on Windows 10/11.
 
-The light, rounded 360 × 300 widget opens near the bottom-right corner. Drag its header to move it. The device picker includes physically connected USB ADB boards and COM ports. For UNO Q, complete initial setup in Arduino App Lab and keep its ADB server running. Use **Debug → Check USB** for diagnostics.
+The light, rounded 360 × 300 widget opens near the bottom-right corner and stays above Chrome. Drag its header to move it. The device picker includes physically connected USB ADB boards and COM ports. For UNO Q, complete initial setup in Arduino App Lab and keep its ADB server running. Use **Debug → Check USB** for diagnostics.
 
-The UNO Q receiver is in [`uno-q/`](uno-q/README.md). It has been installed on the Q and verified to start automatically after reboot. Both task modes, synthetic image transfer and Stop passed USB protocol checks; the AI model is not installed. A COM-only ESP32 with the old handshake sketch can connect but cannot start a task.
+The UNO Q receiver and trained Qwen3-0.6B Q4_K_M model are installed on the Q with boot services. Both task modes, image transfer, heartbeat correlation and Stop have USB protocol checks. A COM-only ESP32 with the old handshake sketch can connect but cannot start a task.
 
 ## Task and screen-sharing flow
 
@@ -24,9 +24,9 @@ The UNO Q receiver is in [`uno-q/`](uno-q/README.md). It has been installed on t
 
 **Do it for me:** the same blue target appears briefly before Bob moves the real Windows cursor and, for a click action, sends one left click. Any physical keyboard or mouse input stops Auto. Escape, Stop, disconnect and closing Bob stop both modes. Auto is disabled if physical-input monitoring cannot start.
 
-**AI inference is not enabled in the widget.** Pretrained benchmark models are staged on the Q; the command-planner training kit is in [`uno-q/ai/`](uno-q/ai/README.md). No target is generated from a normal task yet. For now, **Debug → pointer test** starts an explicit one-step test through UNO Q. Choose Guide/Auto, a target X/Y percentage of the primary screen, and Move/Click, then click the clearly labeled test button. Auto tests move/click the real mouse: select a harmless target before starting and leave the mouse still. Stop the session after testing. Default test action is Move.
+**Local AI is enabled for Chrome tools.** For web searches, the Q model prepares the query once. The Q then sends one bounded step at a time: open Google, focus Chrome's search/address bar, type the query, press Enter, and verify the result title. Each step advances only after feedback; each Auto input needs a fresh USB permit. Routine search steps do not run another model inference. The widget and Stop popup show thinking time while query preparation runs. Guide displays instructions and waits for Step done followed by a return to Chrome. Keep your hands off the mouse and keyboard during Auto; real input cancels the session.
 
-The future model will call `Receiver.queue_action()` on UNO Q. Requests are tied to the current task and acknowledged screenshot, have unique IDs, and are processed once. Auto requires a fresh board permit and rejects targets based on screens older than ten seconds. Guide targets expire after thirty seconds. Only normalized primary-screen move and left-click actions are supported; no shell, typing, dragging or other buttons are exposed.
+Screenshots are transferred to the Q in RAM, but the current language model does not interpret their pixels. The separate **Debug → pointer test** still provides explicit normalized move/click targets through `Receiver.queue_action()`. Those pointer requests are tied to an acknowledged frame and reject stale screens. Chrome typing and shortcuts use a separate bounded tool contract. No shell tool is exposed; arbitrary desktop vision is not implemented.
 
 Debug is beside “Your device. Your control.” It opens bounded Laptop / UNO Q metadata logs inside the widget. No screenshot or prompt payloads are logged. The Q retains the latest frame in RAM only, and releases it when the session ends.
 
