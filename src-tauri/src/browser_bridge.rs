@@ -129,7 +129,7 @@ fn observe_page(url: &str) -> Result<Value, String> {
         .set_write_timeout(Some(Duration::from_millis(500)))
         .map_err(|e| e.to_string())?;
     let (mut socket, _) =
-        tungstenite::client_with_config(url, stream, Some(config)).map_err(|e| e.to_string())?;
+        tungstenite::client::client_with_config(url, stream, Some(config)).map_err(|e| e.to_string())?;
     socket.send(tungstenite::Message::Text(json!({"id":1,"method":"Runtime.evaluate","params":{"expression":OBSERVE,"returnByValue":true,"timeout":300}}).to_string().into())).map_err(|e|e.to_string())?;
     for _ in 0..8 {
         let message = socket.read().map_err(|e| e.to_string())?;
