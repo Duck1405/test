@@ -51,7 +51,7 @@ jobs:
           $result = $LASTEXITCODE
           $diagnostics | ForEach-Object { Write-Output $_ }
           if ($result -ne 0) {
-            $diagnostics | Select-Object -Last 40 | ForEach-Object { Write-Output "::error::$_" }
+            $diagnostics | Where-Object { "$_" -match '^error|^\s*--> |panicked at|assertion|left:|right:|^test .*FAILED' } | Select-Object -Last 9 | ForEach-Object { Write-Output "::error::$_" }
             exit $result
           }
       - name: Check UNO Q receiver
