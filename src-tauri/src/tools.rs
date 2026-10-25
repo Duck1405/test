@@ -83,14 +83,28 @@ impl Plan {
 pub struct BrowserState {
     pub focused: bool,
     pub text: Option<String>,
+    pub submitted: bool,
+    pub before_submit: String,
 }
 impl BrowserState {
     pub fn observation(&self) -> Value {
         let (available, foreground, title) = browser_window();
-        let mut obs = json!({"chrome": if !available {"unavailable"} else if foreground {"ready"} else {"closed"},
-            "active_window": if foreground {"Chrome"} else {"other"},
-            "address_bar_focused": foreground && self.focused,
-            "page_title": title, "page_loading": false});
+        if !available {
+            return json!({"chrome":"unavailable","active_window":"other"});
+        }
+        if !foreground {
+            return json!({"chrome":"closed"});
+        }
+        let mut obs = json!({"chrome":"ready","active_window":"Chrome"});
+        if self.submitted {
+            let loading = title.is_empty() || title == self.before_submit;
+            obs["page_loading"] = json!(loading);
+            if !loading {
+                obs["page_title"] = json!(title.strip_suffix(" - Google Chrome").unwrap_or(&title));
+            }
+        } else {
+            obs["address_bar_focused"] = json!(self.focused);
+        }
         if foreground && self.focused {
             if let Some(text) = &self.text {
                 obs["address_bar_text"] = json!(text);
@@ -108,13 +122,20 @@ impl BrowserState {
             "launch_chrome" => {
                 self.focused = false;
                 self.text = None;
+                self.submitted = false;
             }
             "hotkey" if matches!(plan.args["keys"].as_str(), Some("ctrl+l" | "ctrl+t")) => {
                 self.focused = true;
                 self.text = None;
+                self.submitted = false;
             }
             "type_text" => self.text = plan.args["text"].as_str().map(str::to_string),
-            "press_key" => self.focused = false,
+            "press_key" => {
+                if plan.args["key"] == "enter" && self.focused {
+                    self.submitted = true;
+                }
+                self.focused = false;
+            }
             _ => {}
         }
     }

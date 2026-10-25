@@ -29,7 +29,7 @@ mod platform {
         }
         CallNextHookEx(std::ptr::null_mut(), code, w, l)
     }
-    unsafe extern "system" fn keyboard(code: i32, w: WPARAM, l: LPARAM) -> LRESULT {
+    unsafe extern "system" fn keyboard_hook(code: i32, w: WPARAM, l: LPARAM) -> LRESULT {
         if code >= 0 && AUTO.load(Ordering::SeqCst) {
             let data = &*(l as *const KBDLLHOOKSTRUCT);
             if data.flags & 0x10 == 0 {
@@ -42,7 +42,7 @@ mod platform {
         std::thread::spawn(|| unsafe {
             let module = GetModuleHandleW(std::ptr::null());
             let mouse_hook = SetWindowsHookExW(WH_MOUSE_LL, Some(mouse), module, 0);
-            let key_hook = SetWindowsHookExW(WH_KEYBOARD_LL, Some(keyboard), module, 0);
+            let key_hook = SetWindowsHookExW(WH_KEYBOARD_LL, Some(keyboard_hook), module, 0);
             if mouse_hook.is_null() || key_hook.is_null() {
                 if !mouse_hook.is_null() {
                     UnhookWindowsHookEx(mouse_hook);

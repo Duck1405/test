@@ -433,6 +433,9 @@ fn process_planner(
             let step: PlannerStep = serde_json::from_value(reply["step"].clone())
                 .map_err(|_| "Invalid planner step")?;
             step.plan.validate()?;
+            if step.plan.tool == "press_key" && step.plan.args["key"] == "enter" {
+                browser.before_submit = tools::browser_window().2;
+            }
             if step.id.is_empty()
                 || step.id.len() > 100
                 || !step.seconds.is_finite()
